@@ -67,6 +67,14 @@ _STACK_OPERATION_DELTAS = {
     "gotBeginGroup": ("group", 1),
     "gotEndGroup": ("group", -1),
 }
+_PRIVATE_RENDER_FIELDS = frozenset(
+    {
+        "source_object_index",
+        "render_group_id",
+        "render_group_identity",
+        "render_source_id",
+    }
+)
 
 
 def _validate_geometry_string_bytes(payload: object, limit: int) -> None:
@@ -1134,6 +1142,8 @@ class SchGeometryOp:
         payload = copy.deepcopy(data)
         kind = str(payload.pop("type", "")).strip()
         payload.pop("index", None)
+        for field_name in _PRIVATE_RENDER_FIELDS:
+            payload.pop(field_name, None)
         return cls(kind=kind, payload=payload)
 
     @classmethod
@@ -1395,7 +1405,13 @@ class SchGeometryOp:
         data: dict[str, Any] = {"type": self.kind_str()}
         if index is not None:
             data["index"] = int(index)
-        data.update(copy.deepcopy(self.payload))
+        data.update(
+            {
+                key: copy.deepcopy(value)
+                for key, value in self.payload.items()
+                if key not in _PRIVATE_RENDER_FIELDS
+            }
+        )
         return data
 
 
@@ -1435,6 +1451,8 @@ class SchGeometryRecord:
         operations_data = extras.pop("operations", []) or []
         bounds = SchGeometryBounds.from_dict(extras.pop("bounds", None))
         extras.pop("operation_count", None)
+        for field_name in _PRIVATE_RENDER_FIELDS:
+            extras.pop(field_name, None)
         return cls(
             handle=str(extras.pop("handle", "")),
             unique_id=(
@@ -1466,7 +1484,13 @@ class SchGeometryRecord:
         data["operations"] = [
             op.to_dict(index=index) for index, op in enumerate(self.operations)
         ]
-        data.update(copy.deepcopy(self.extras))
+        data.update(
+            {
+                key: copy.deepcopy(value)
+                for key, value in self.extras.items()
+                if key not in _PRIVATE_RENDER_FIELDS
+            }
+        )
         return data
 
 

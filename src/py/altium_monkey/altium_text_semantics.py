@@ -1,9 +1,9 @@
-"""Match the case-insensitive schematic-name comparison used by ADDevelop."""
+"""Altium text identity, ordering, whitespace, and UTF-16 helpers."""
 
 from bisect import bisect_right
 
 
-_DOTNET_8_SIMPLE_UPPER_RANGES: tuple[tuple[int, int, int, int], ...] = (
+_ALTIUM_SIMPLE_UPPER_RANGES: tuple[tuple[int, int, int, int], ...] = (
     (0x61, 0x7A, 1, -32),
     (0xE0, 0xF6, 1, -32),
     (0xF8, 0xFE, 1, -32),
@@ -104,18 +104,18 @@ _DOTNET_8_SIMPLE_UPPER_RANGES: tuple[tuple[int, int, int, int], ...] = (
 )
 
 
-def dotnet_trim(value: str) -> str:
+def trim_altium_whitespace(value: str) -> str:
     """Trim exactly the characters recognized by .NET ``Char.IsWhiteSpace``."""
     start = 0
     end = len(value)
-    while start < end and _dotnet_char_is_whitespace(value[start]):
+    while start < end and _is_altium_whitespace_char(value[start]):
         start += 1
-    while end > start and _dotnet_char_is_whitespace(value[end - 1]):
+    while end > start and _is_altium_whitespace_char(value[end - 1]):
         end -= 1
     return value[start:end]
 
 
-def _dotnet_char_is_whitespace(value: str) -> bool:
+def _is_altium_whitespace_char(value: str) -> bool:
     code = ord(value)
     return (
         0x0009 <= code <= 0x000D
@@ -125,8 +125,8 @@ def _dotnet_char_is_whitespace(value: str) -> bool:
     )
 
 
-_DOTNET_8_RANGE_STARTS = tuple(row[0] for row in _DOTNET_8_SIMPLE_UPPER_RANGES)
-_DOTNET_8_SIMPLE_UPPER_SINGLETONS: dict[int, int] = {
+_ALTIUM_UPPER_RANGE_STARTS = tuple(row[0] for row in _ALTIUM_SIMPLE_UPPER_RANGES)
+_ALTIUM_SIMPLE_UPPER_SINGLETONS: dict[int, int] = {
     0xB5: 0x39C,
     0xFF: 0x178,
     0x180: 0x243,
@@ -224,31 +224,33 @@ _DOTNET_8_SIMPLE_UPPER_SINGLETONS: dict[int, int] = {
 }
 
 
-def _dotnet_ordinal_upper_scalar(value: int) -> int:
-    singleton = _DOTNET_8_SIMPLE_UPPER_SINGLETONS.get(value)
+def _altium_name_upper_scalar(value: int) -> int:
+    singleton = _ALTIUM_SIMPLE_UPPER_SINGLETONS.get(value)
     if singleton is not None:
         return singleton
-    range_index = bisect_right(_DOTNET_8_RANGE_STARTS, value) - 1
+    range_index = bisect_right(_ALTIUM_UPPER_RANGE_STARTS, value) - 1
     if range_index < 0:
         return value
-    start, end, step, delta = _DOTNET_8_SIMPLE_UPPER_RANGES[range_index]
+    start, end, step, delta = _ALTIUM_SIMPLE_UPPER_RANGES[range_index]
     if value <= end and (value - start) % step == 0:
         return value + delta
     return value
 
 
-def dotnet_ordinal_ignore_case_key(value: str) -> str:
-    """Return the .NET 8 OrdinalIgnoreCase key for valid Unicode text."""
-    return "".join(chr(_dotnet_ordinal_upper_scalar(ord(char))) for char in value)
+def altium_name_key(value: str) -> str:
+    """Return Altium's case-insensitive name-identity key."""
+    if value.isascii():
+        return value.upper()
+    return "".join(chr(_altium_name_upper_scalar(ord(char))) for char in value)
 
 
-def dotnet_ordinal_ignore_case_sort_key(value: str) -> bytes:
-    """Return a byte key ordered like .NET's case-insensitive UTF-16 ordinal."""
-    return dotnet_ordinal_ignore_case_key(value).encode("utf-16-be")
+def altium_name_sort_key(value: str) -> bytes:
+    """Return Altium's case-insensitive UTF-16 name-order key."""
+    return altium_name_key(value).encode("utf-16-be")
 
 
-def dotnet_utf16_units(value: str) -> tuple[int, ...]:
-    """Return the UTF-16 code units used by managed ordinal comparisons."""
+def utf16_code_units(value: str) -> tuple[int, ...]:
+    """Return the UTF-16 code units used by Altium text ordering."""
     encoded = value.encode("utf-16-le", errors="surrogatepass")
     return tuple(
         encoded[index] | (encoded[index + 1] << 8)

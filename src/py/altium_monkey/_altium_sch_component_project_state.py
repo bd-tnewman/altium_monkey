@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .altium_dotnet_ordinal import dotnet_ordinal_ignore_case_key
+from .altium_text_semantics import altium_name_key
 from .altium_netlist_common import _evaluate_altium_expression
 
 if TYPE_CHECKING:
@@ -103,9 +103,9 @@ class _ProjectVariantsLibraryIndex:
 
 
 def _link_value(link: Mapping[str, object], name: str) -> str:
-    key = dotnet_ordinal_ignore_case_key(name)
+    key = altium_name_key(name)
     for candidate, value in link.items():
-        if dotnet_ordinal_ignore_case_key(str(candidate)) == key:
+        if altium_name_key(str(candidate)) == key:
             return str(value or "")
     return ""
 
@@ -123,9 +123,9 @@ def _component_identity(
         )
     )
     return (
-        dotnet_ordinal_ignore_case_key(values[0] or ""),
-        dotnet_ordinal_ignore_case_key(values[1] or ""),
-        dotnet_ordinal_ignore_case_key(values[2] or ""),
+        altium_name_key(values[0] or ""),
+        altium_name_key(values[1] or ""),
+        altium_name_key(values[2] or ""),
     )
 
 
@@ -139,9 +139,9 @@ def _link_identity(
         else ("DesignItemID", "SourceLibraryName", "DatabaseTableName")
     )
     return vault, (
-        dotnet_ordinal_ignore_case_key(_link_value(link, names[0])),
-        dotnet_ordinal_ignore_case_key(_link_value(link, names[1])),
-        dotnet_ordinal_ignore_case_key(_link_value(link, names[2])),
+        altium_name_key(_link_value(link, names[0])),
+        altium_name_key(_link_value(link, names[1])),
+        altium_name_key(_link_value(link, names[2])),
     )
 
 
@@ -252,8 +252,7 @@ def _parameter_project_overrides(
     effective.update(component_parameters)
     effective.update((str(name), str(value)) for name, value in varied.items())
     varied_by_name = {
-        dotnet_ordinal_ignore_case_key(str(name)): str(value)
-        for name, value in varied.items()
+        altium_name_key(str(name)): str(value) for name, value in varied.items()
     }
     result = _parameter_owner_overrides(
         source,
@@ -289,15 +288,13 @@ def _parameter_owner_overrides(
     for parameter in owner.children or owner.parameters:
         if type(parameter) is not AltiumSchParameter:
             continue
-        value = varied_by_name.get(dotnet_ordinal_ignore_case_key(parameter.name))
+        value = varied_by_name.get(altium_name_key(parameter.name))
         if value is None:
             continue
         calculated = _calculated_variant_value(value, effective)
-        changed = dotnet_ordinal_ignore_case_key(
-            calculated
-        ) != dotnet_ordinal_ignore_case_key(value) or dotnet_ordinal_ignore_case_key(
-            parameter.text
-        ) != dotnet_ordinal_ignore_case_key(value)
+        changed = altium_name_key(calculated) != altium_name_key(
+            value
+        ) or altium_name_key(parameter.text) != altium_name_key(value)
         if is_variant_parameter and value:
             result[id(parameter)] = _ParameterRenderOverride(
                 value,
@@ -313,12 +310,12 @@ def _parameter_owner_overrides(
 def _variation_kind(variation: Mapping[str, object] | None) -> int:
     if variation is None:
         return 0
-    key = dotnet_ordinal_ignore_case_key("Kind")
+    key = altium_name_key("Kind")
     raw = next(
         (
             value
             for name, value in reversed(tuple(variation.items()))
-            if dotnet_ordinal_ignore_case_key(str(name)) == key
+            if altium_name_key(str(name)) == key
         ),
         0,
     )

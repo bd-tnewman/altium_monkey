@@ -14,7 +14,7 @@ from .altium_sch_record_helpers import (
     detect_case_mode_method_from_dotted_uppercase_fields,
     remove_named_entry,
 )
-from .altium_dotnet_ordinal import dotnet_trim
+from .altium_text_semantics import trim_altium_whitespace
 from ._sch_managed_defaults import (
     SHEET_SYMBOL_BORDER_COLOR,
     SHEET_SYMBOL_FILL_COLOR,
@@ -32,7 +32,7 @@ from .altium_serializer import (
 
 def _is_repeat_name(value: str) -> bool:
     opening = value.find("(")
-    if opening < 0 or dotnet_trim(value[:opening]).lower() != "repeat":
+    if opening < 0 or trim_altium_whitespace(value[:opening]).lower() != "repeat":
         return False
     closing = value.find(")", opening + 1)
     if closing < 0:

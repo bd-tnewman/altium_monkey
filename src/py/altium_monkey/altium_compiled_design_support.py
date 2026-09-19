@@ -7,14 +7,14 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from .altium_dotnet_ordinal import dotnet_ordinal_ignore_case_key, dotnet_trim
+from .altium_text_semantics import altium_name_key, trim_altium_whitespace
 from ._sch_source_projection import (
     _component_bound_field_slots,
     _hierarchy_bound_field_slots,
     _hierarchy_field_role,
     _component_object_list_owner as _compiler_part_owner,
 )
-from .altium_managed_alpha_numeric import managed_designator_prefix
+from .altium_alpha_numeric import altium_designator_prefix
 from .altium_record_sch__designator import AltiumSchDesignator
 from .altium_record_sch__parameter import AltiumSchParameter
 from .altium_record_types import SchPrimitive
@@ -448,14 +448,14 @@ def _strip_diff_pair_suffix(name: str) -> tuple[str, str]:
 def _parse_entry_repeat(entry_name: str) -> str | None:
     """Parse ``REPEAT(portName)`` from a sheet-entry name."""
     opening = entry_name.find("(")
-    if opening < 0 or dotnet_ordinal_ignore_case_key(
-        dotnet_trim(entry_name[:opening])
-    ) != dotnet_ordinal_ignore_case_key("REPEAT"):
+    if opening < 0 or altium_name_key(
+        trim_altium_whitespace(entry_name[:opening])
+    ) != altium_name_key("REPEAT"):
         return None
     closing = entry_name.find(")", opening + 1)
     if closing < 0:
         return None
-    return dotnet_trim(entry_name[opening + 1 : closing])
+    return trim_altium_whitespace(entry_name[opening + 1 : closing])
 
 
 def _build_room_details(
@@ -495,7 +495,7 @@ def apply_channel_pattern(
     """Apply an Altium channel designator format string."""
     result = _replace_room_details(format_str, room)
     return _replace_component_details(
-        result, designator, managed_designator_prefix(designator)
+        result, designator, altium_designator_prefix(designator)
     )
 
 
@@ -511,7 +511,7 @@ def _format_part_physical_designator(
     if not pattern:
         return full_designator
     return _replace_component_details(
-        pattern, full_designator, managed_designator_prefix(designator)
+        pattern, full_designator, altium_designator_prefix(designator)
     )
 
 
@@ -611,10 +611,7 @@ def _component_source_fields(
     parameters = tuple(
         parameter
         for parameter in component.parameters
-        if (
-            dotnet_ordinal_ignore_case_key(parameter.name) != "COMMENT"
-            or parameter is comment
-        )
+        if (altium_name_key(parameter.name) != "COMMENT" or parameter is comment)
     )
     return designator if isinstance(
         designator, AltiumSchDesignator

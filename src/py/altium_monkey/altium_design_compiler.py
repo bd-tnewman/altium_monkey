@@ -50,15 +50,15 @@ from .altium_compiled_design_model import (
     AltiumCompiledSheetSymbol,
     AltiumProjectCompileOptions,
 )
-from .altium_dotnet_ordinal import (
-    dotnet_ordinal_ignore_case_key,
-    dotnet_ordinal_ignore_case_sort_key,
-    dotnet_utf16_units,
-    dotnet_trim,
+from .altium_text_semantics import (
+    altium_name_key,
+    altium_name_sort_key,
+    utf16_code_units,
+    trim_altium_whitespace,
 )
-from .altium_managed_alpha_numeric import (
-    managed_alpha_numeric_compare,
-    managed_designator_prefix,
+from .altium_alpha_numeric import (
+    altium_alpha_numeric_compare,
+    altium_designator_prefix,
 )
 from .altium_managed_collation import managed_en_us_compare
 from .altium_component_kind import (
@@ -235,6 +235,13 @@ class _CompiledComponentSourceInfo:
     cross_document_multipart: bool
 
 
+_ComponentSourceContextKey = tuple[
+    str,
+    tuple[tuple[str, str], ...],
+    tuple[tuple[str, str], ...],
+]
+
+
 @dataclass(frozen=True, slots=True)
 class _CompiledManagedPinRow:
     physical_part_designator: str
@@ -250,6 +257,13 @@ class _CompiledManagedPinRow:
     source_pin_uid: str
     source_pin_object_id: int
     source_index: int
+
+
+@dataclass(frozen=True, slots=True)
+class _CompiledManagedPinCountRow:
+    designator: str
+    local_signal_id: str | None
+    global_signal_id: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -287,6 +301,13 @@ class _SourcePinDesignator:
 class _CompiledComponentParameter:
     name: str
     text: str
+    identity_key: str
+
+
+@dataclass(frozen=True, slots=True)
+class _CompiledComponentParameterNameOrder:
+    indices: tuple[int, ...]
+    has_managed_name_ties: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,9 +318,9 @@ class _CompiledComponentExpressionView:
     parameters: tuple[_CompiledComponentParameter, ...]
 
     def get_parameter(self, name: str) -> str | None:
-        key = dotnet_ordinal_ignore_case_key(name)
+        key = altium_name_key(name)
         for parameter in self.parameters:
-            if dotnet_ordinal_ignore_case_key(parameter.name) == key:
+            if parameter.identity_key == key:
                 return parameter.text
         return None
 
@@ -404,22 +425,22 @@ def _logical_document_id(source_path: str, ordinal: int) -> str:
 
 
 def _document_parameter_value(parameters: Mapping[str, str], name: str) -> str | None:
-    key = dotnet_ordinal_ignore_case_key(name)
+    key = altium_name_key(name)
     result: str | None = None
     for candidate, value in parameters.items():
-        if dotnet_ordinal_ignore_case_key(candidate) == key:
+        if altium_name_key(candidate) == key:
             result = str(value or "")
     return result
 
 
 def _raw_document_parameter(schdoc: object, name: str) -> str | None:
-    key = dotnet_ordinal_ignore_case_key(name)
+    key = altium_name_key(name)
     result: str | None = None
     records = getattr(schdoc, "_document_parameters", None)
     if callable(records):
         for parameter in cast(Callable[[], Iterable[object]], records)():
             candidate = str(getattr(parameter, "name", "") or "")
-            if dotnet_ordinal_ignore_case_key(candidate) == key:
+            if altium_name_key(candidate) == key:
                 result = str(getattr(parameter, "text", "") or "")
         return result
     get_parameter_dict = getattr(schdoc, "get_parameter_dict")
@@ -457,9 +478,7 @@ def _resolved_document_parameter(
     if matched and matched != "*":
         return matched
     for project_name, project_value in project_parameters.items():
-        if dotnet_ordinal_ignore_case_key(
-            project_name
-        ) != dotnet_ordinal_ignore_case_key(name):
+        if altium_name_key(project_name) != altium_name_key(name):
             continue
         resolved = str(project_value or "")
         return resolved if resolved and resolved != "*" else None
@@ -1003,9 +1022,9 @@ def _local_multipart_designators(schdoc: "AltiumSchDoc") -> set[str]:
         if _designator_binds_multipart_records(
             logical_designator
         ) and _component_record_is_multipart(component):
-            placed_part_ids_by_designator[
-                dotnet_ordinal_ignore_case_key(logical_designator)
-            ].add(_component_record_current_part_id(component))
+            placed_part_ids_by_designator[altium_name_key(logical_designator)].add(
+                _component_record_current_part_id(component)
+            )
     return {
         designator
         for designator, part_ids in placed_part_ids_by_designator.items()
@@ -1030,13 +1049,12 @@ def _component_pin_full_designators_by_pin(
 ) -> dict[tuple[str, str], str]:
     local_multipart_designators = _local_multipart_designators(schdoc)
     effective_multipart_designators = {
-        dotnet_ordinal_ignore_case_key(designator)
-        for designator in (multipart_designators or ())
+        altium_name_key(designator) for designator in (multipart_designators or ())
     } | local_multipart_designators
     result: dict[tuple[str, str], str] = {}
     for component in _compiler_component_sources(schdoc):
         logical_designator = str(component.designator or "")
-        logical_designator_key = dotnet_ordinal_ignore_case_key(logical_designator)
+        logical_designator_key = altium_name_key(logical_designator)
         part_count = _component_record_subparts_count(component)
         for pin in component.pins:
             pin_number = str(getattr(pin, "designator", "") or "")
@@ -1068,10 +1086,8 @@ def _compiled_component_source_groups(
             groups.append([component])
             continue
         part_id = _component_record_current_part_id(component)
-        designator_key = dotnet_ordinal_ignore_case_key(designator)
-        design_item_key = dotnet_ordinal_ignore_case_key(
-            _component_design_item_id(component)
-        )
+        designator_key = altium_name_key(designator)
+        design_item_key = altium_name_key(_component_design_item_id(component))
         candidate_groups = multipart_groups[designator_key]
         candidate_group = next(
             (
@@ -1108,7 +1124,7 @@ def _compiled_component_group_footprint(
 ) -> str:
     return min(
         (str(getattr(component, "footprint", "") or "") for component in group),
-        key=cmp_to_key(managed_alpha_numeric_compare),
+        key=cmp_to_key(altium_alpha_numeric_compare),
     )
 
 
@@ -1128,7 +1144,7 @@ def _compiled_component_group_parameters(
             # PartInfo creates these entries before MultiPartInfo merges the next
             # slot, so even empty lower-slot virtuals block later authored names.
             seen.update(
-                dotnet_ordinal_ignore_case_key(name)
+                altium_name_key(name)
                 for name in (
                     "Comment",
                     "Description",
@@ -1148,6 +1164,58 @@ def _compiled_component_group_parameters(
     )
 
 
+def _compiled_component_authored_parameters(
+    group: tuple["SchComponentInfo", ...],
+    authored_parameters_by_source_object_id: dict[
+        int, tuple[_CompiledComponentParameter, ...]
+    ]
+    | None,
+) -> tuple[_CompiledComponentParameter, ...]:
+    source_object_id = id(group[0])
+    if authored_parameters_by_source_object_id is not None:
+        cached = authored_parameters_by_source_object_id.get(source_object_id)
+        if cached is not None:
+            return cached
+    parameters = _compiled_component_group_parameters(group)
+    if authored_parameters_by_source_object_id is not None:
+        authored_parameters_by_source_object_id[source_object_id] = parameters
+    return parameters
+
+
+def _compiled_component_parameter_name_order(
+    component: "SchComponentInfo",
+    parameters: tuple[_CompiledComponentParameter, ...],
+    cache: dict[int, _CompiledComponentParameterNameOrder] | None,
+) -> _CompiledComponentParameterNameOrder:
+    source_object_id = id(component)
+    if cache is not None and (cached := cache.get(source_object_id)) is not None:
+        return cached
+    indices = tuple(
+        sorted(
+            range(len(parameters)),
+            key=cmp_to_key(
+                lambda left, right: altium_alpha_numeric_compare(
+                    parameters[left].name,
+                    parameters[right].name,
+                )
+            ),
+        )
+    )
+    order = _CompiledComponentParameterNameOrder(
+        indices=indices,
+        has_managed_name_ties=any(
+            not altium_alpha_numeric_compare(
+                parameters[left].name,
+                parameters[right].name,
+            )
+            for left, right in zip(indices, indices[1:], strict=False)
+        ),
+    )
+    if cache is not None:
+        cache[source_object_id] = order
+    return order
+
+
 def _append_component_authored_parameters(
     result: list[_CompiledComponentParameter],
     seen: set[str],
@@ -1157,15 +1225,15 @@ def _append_component_authored_parameters(
         name = str(getattr(parameter, "name", "") or "")
         if not name:
             continue
-        key = dotnet_ordinal_ignore_case_key(name)
+        key = altium_name_key(name)
         text = str(getattr(parameter, "text", "") or "")
-        if _is_component_directive_parameter(name):
-            result.append(_CompiledComponentParameter(name=name, text=text))
+        if key in _COMPONENT_DIRECTIVE_PARAMETER_KEYS:
+            result.append(_CompiledComponentParameter(name, text, key))
             continue
         if key in seen:
             continue
         seen.add(key)
-        result.append(_CompiledComponentParameter(name=name, text=text))
+        result.append(_CompiledComponentParameter(name, text, key))
 
 
 def _evaluate_component_parameter_map(
@@ -1175,13 +1243,95 @@ def _evaluate_component_parameter_map(
     *,
     sheet_parameters: Mapping[str, str] | None = None,
     hierarchy_parameters: Mapping[str, str] | None = None,
+    expression_base_values: Mapping[str, tuple[str, str]] | None = None,
+    parameter_name_order: _CompiledComponentParameterNameOrder | None = None,
 ) -> tuple[_CompiledComponentParameter, ...]:
+    evaluated_candidates = _evaluated_component_parameter_candidates(
+        component,
+        parameters,
+        options,
+        sheet_parameters=sheet_parameters,
+        hierarchy_parameters=hierarchy_parameters,
+        expression_base_values=expression_base_values,
+    )
+    return _ordered_evaluated_component_parameters(
+        evaluated_candidates,
+        parameter_name_order,
+    )
+
+
+def _deduplicated_component_directives(
+    evaluated_candidates: list[_CompiledComponentParameter],
+) -> tuple[list[_CompiledComponentParameter], bool]:
+    has_directives = any(
+        parameter.identity_key in _COMPONENT_DIRECTIVE_PARAMETER_KEYS
+        for parameter in evaluated_candidates
+    )
+    if has_directives:
+        evaluated_candidates.sort(
+            key=cmp_to_key(
+                lambda left, right: altium_alpha_numeric_compare(
+                    left.name,
+                    right.name,
+                )
+            )
+        )
+    evaluated: list[_CompiledComponentParameter] = []
+    seen_directives: set[str] = set()
+    for parameter in evaluated_candidates:
+        if parameter.identity_key not in _COMPONENT_DIRECTIVE_PARAMETER_KEYS:
+            evaluated.append(parameter)
+            continue
+        text = parameter.text
+        directive_key = f"{parameter.identity_key}\0{altium_name_key(text)}"
+        if directive_key in seen_directives:
+            continue
+        seen_directives.add(directive_key)
+        evaluated.append(parameter)
+    return evaluated, has_directives
+
+
+def _ordered_evaluated_component_parameters(
+    evaluated_candidates: list[_CompiledComponentParameter],
+    parameter_name_order: _CompiledComponentParameterNameOrder | None,
+) -> tuple[_CompiledComponentParameter, ...]:
+    evaluated, has_directives = _deduplicated_component_directives(evaluated_candidates)
+    if (
+        parameter_name_order is not None
+        and not has_directives
+        and not parameter_name_order.has_managed_name_ties
+        and len(evaluated) == len(parameter_name_order.indices)
+    ):
+        return tuple(evaluated[index] for index in parameter_name_order.indices)
+    evaluated.sort(
+        key=cmp_to_key(
+            lambda left, right: _compiled_component_parameter_pair_compare(
+                (left.name, left.text),
+                (right.name, right.text),
+            )
+        )
+    )
+    return tuple(evaluated)
+
+
+def _evaluated_component_parameter_candidates(
+    component: "SchComponentInfo",
+    parameters: tuple[_CompiledComponentParameter, ...],
+    options: NetlistOptions,
+    *,
+    sheet_parameters: Mapping[str, str] | None,
+    hierarchy_parameters: Mapping[str, str] | None,
+    expression_base_values: Mapping[str, tuple[str, str]] | None,
+) -> list[_CompiledComponentParameter]:
+    if not any(parameter.text.startswith("=") for parameter in parameters):
+        return list(parameters)
     values = _component_expression_values(
         component,
         parameters,
         options,
         sheet_parameters=sheet_parameters,
         hierarchy_parameters=hierarchy_parameters,
+        expression_base_values=expression_base_values,
     )
 
     resolved: dict[str, str] = {}
@@ -1196,6 +1346,10 @@ def _evaluate_component_parameter_map(
         if not raw.startswith("="):
             resolved[key] = raw
             return raw
+        direct_value = _direct_component_expression_value(raw, key, values)
+        if direct_value is not None:
+            resolved[key] = direct_value
+            return direct_value
         active.add(key)
         context = {
             candidate_name: resolve(candidate_key)
@@ -1213,10 +1367,10 @@ def _evaluate_component_parameter_map(
     context = {name: resolve(key) for key, (name, _) in values.items()}
     evaluated_candidates: list[_CompiledComponentParameter] = []
     for parameter in parameters:
-        key = dotnet_ordinal_ignore_case_key(parameter.name)
-        if not _is_component_directive_parameter(parameter.name):
+        key = parameter.identity_key
+        if key not in _COMPONENT_DIRECTIVE_PARAMETER_KEYS:
             evaluated_candidates.append(
-                _CompiledComponentParameter(parameter.name, resolve(key))
+                _CompiledComponentParameter(parameter.name, resolve(key), key)
             )
             continue
         text = parameter.text
@@ -1226,38 +1380,41 @@ def _evaluate_component_parameter_map(
                 context,
                 preserve_unresolved_formula=True,
             )
-        evaluated_candidates.append(_CompiledComponentParameter(parameter.name, text))
+        evaluated_candidates.append(
+            _CompiledComponentParameter(parameter.name, text, key)
+        )
 
-    evaluated_candidates.sort(
-        key=cmp_to_key(
-            lambda left, right: managed_alpha_numeric_compare(
-                left.name,
-                right.name,
-            )
-        )
-    )
-    evaluated: list[_CompiledComponentParameter] = []
-    seen_directives: set[str] = set()
-    for parameter in evaluated_candidates:
-        if not _is_component_directive_parameter(parameter.name):
-            evaluated.append(parameter)
-            continue
-        key = dotnet_ordinal_ignore_case_key(parameter.name)
-        text = parameter.text
-        directive_key = f"{key}\0{dotnet_ordinal_ignore_case_key(text)}"
-        if directive_key in seen_directives:
-            continue
-        seen_directives.add(directive_key)
-        evaluated.append(parameter)
-    evaluated.sort(
-        key=cmp_to_key(
-            lambda left, right: _compiled_component_parameter_pair_compare(
-                (left.name, left.text),
-                (right.name, right.text),
-            )
-        )
-    )
-    return tuple(evaluated)
+    return evaluated_candidates
+
+
+def _direct_component_expression_value(
+    raw: str,
+    current_key: str,
+    values: Mapping[str, tuple[str, str]],
+) -> str | None:
+    identifier = _single_component_expression_identifier(raw)
+    if identifier is None:
+        return None
+    if any(
+        candidate_key != current_key and candidate_value.startswith("=")
+        for candidate_key, (_, candidate_value) in values.items()
+    ):
+        return None
+    dependency_key = altium_name_key(identifier)
+    dependency = values.get(dependency_key)
+    if dependency_key == current_key or dependency is None:
+        return raw
+    dependency_value = dependency[1]
+    return None if dependency_value.startswith("=") else dependency_value
+
+
+def _single_component_expression_identifier(raw: str) -> str | None:
+    identifier = raw[1:].strip(" \t")
+    if not identifier or not (identifier[0].isalpha() or identifier[0] == "_"):
+        return None
+    if not all(character.isalnum() or character == "_" for character in identifier[1:]):
+        return None
+    return identifier
 
 
 def _component_expression_values(
@@ -1267,30 +1424,18 @@ def _component_expression_values(
     *,
     sheet_parameters: Mapping[str, str] | None,
     hierarchy_parameters: Mapping[str, str] | None = None,
+    expression_base_values: Mapping[str, tuple[str, str]] | None = None,
 ) -> dict[str, tuple[str, str]]:
-    values: dict[str, tuple[str, str]] = {}
-    project_values: dict[str, tuple[str, str]] = {}
-
-    def add_value(name: str, value: str) -> None:
-        values[dotnet_ordinal_ignore_case_key(name)] = (name, value)
-
-    for name, value in options.project_parameters.items():
-        project_values[dotnet_ordinal_ignore_case_key(name)] = (name, value)
-        add_value(name, value)
-    for name, value in (hierarchy_parameters or {}).items():
-        add_value(name, value)
-    owning_sheet_parameters = (
-        options.sheet_parameters if sheet_parameters is None else sheet_parameters
-    )
-    for name, value in owning_sheet_parameters.items():
-        add_value(
-            name,
-            _recursive_component_document_parameter(
-                name,
-                value,
-                project_values,
-            ),
+    values = (
+        dict(expression_base_values)
+        if expression_base_values is not None
+        else _component_document_expression_values(
+            options,
+            sheet_parameters=sheet_parameters,
+            hierarchy_parameters=hierarchy_parameters,
         )
+    )
+
     for name, value in (
         ("CurrentFootprint", component.footprint),
         ("VariantName", "[No Variations]"),
@@ -1300,10 +1445,37 @@ def _component_expression_values(
         ("Library Name", _component_source_library_name(component)),
         ("Component Kind", _component_kind_name(component)),
     ):
-        add_value(name, value)
+        values[altium_name_key(name)] = (name, value)
     for parameter in parameters:
-        if not _is_component_directive_parameter(parameter.name):
-            add_value(parameter.name, parameter.text)
+        if parameter.identity_key not in _COMPONENT_DIRECTIVE_PARAMETER_KEYS:
+            values[parameter.identity_key] = (parameter.name, parameter.text)
+    return values
+
+
+def _component_document_expression_values(
+    options: NetlistOptions,
+    *,
+    sheet_parameters: Mapping[str, str] | None,
+    hierarchy_parameters: Mapping[str, str] | None,
+) -> dict[str, tuple[str, str]]:
+    values: dict[str, tuple[str, str]] = {}
+    project_values: dict[str, tuple[str, str]] = {}
+
+    for name, value in options.project_parameters.items():
+        project_values[altium_name_key(name)] = (name, value)
+        values[altium_name_key(name)] = (name, value)
+    for name, value in (hierarchy_parameters or {}).items():
+        values[altium_name_key(name)] = (name, value)
+    owning_sheet_parameters = (
+        options.sheet_parameters if sheet_parameters is None else sheet_parameters
+    )
+    for name, value in owning_sheet_parameters.items():
+        resolved = _recursive_component_document_parameter(
+            name,
+            value,
+            project_values,
+        )
+        values[altium_name_key(name)] = (name, resolved)
     return values
 
 
@@ -1314,7 +1486,7 @@ def _recursive_component_document_parameter(
 ) -> str:
     if value not in {"", "*"}:
         return value
-    project_value = project_values.get(dotnet_ordinal_ignore_case_key(name))
+    project_value = project_values.get(altium_name_key(name))
     return value if project_value is None else project_value[1]
 
 
@@ -1326,6 +1498,7 @@ def _evaluate_component_field(
     *,
     sheet_parameters: Mapping[str, str] | None = None,
     hierarchy_parameters: Mapping[str, str] | None = None,
+    expression_base_values: Mapping[str, tuple[str, str]] | None = None,
 ) -> str:
     if not raw.startswith("="):
         return raw
@@ -1335,6 +1508,7 @@ def _evaluate_component_field(
         options,
         sheet_parameters=sheet_parameters,
         hierarchy_parameters=hierarchy_parameters,
+        expression_base_values=expression_base_values,
     )
     context = {name: value for name, value in values.values()}
     return _evaluate_altium_expression(
@@ -1344,18 +1518,45 @@ def _evaluate_component_field(
     )
 
 
-def _is_component_directive_parameter(name: str) -> bool:
-    key = dotnet_ordinal_ignore_case_key(name)
-    return key in {
-        dotnet_ordinal_ignore_case_key(candidate)
-        for candidate in (
-            "Rule",
-            "ClassName",
-            "CompClassName",
-            "DifferentialPair",
-            "DifferentialPairClassName",
-        )
+def _compiled_component_field_value(
+    evaluated_parameters: Mapping[str, str],
+    identity_key: str,
+    raw: str,
+    parameters: tuple[_CompiledComponentParameter, ...],
+    component: "SchComponentInfo",
+    options: NetlistOptions,
+    *,
+    sheet_parameters: Mapping[str, str] | None = None,
+    hierarchy_parameters: Mapping[str, str] | None = None,
+    expression_base_values: Mapping[str, tuple[str, str]] | None = None,
+) -> str:
+    value = evaluated_parameters.get(identity_key)
+    if value is not None:
+        return value
+    return _evaluate_component_field(
+        raw,
+        parameters,
+        component,
+        options,
+        sheet_parameters=sheet_parameters,
+        hierarchy_parameters=hierarchy_parameters,
+        expression_base_values=expression_base_values,
+    )
+
+
+_COMPONENT_DIRECTIVE_PARAMETER_KEYS = frozenset(
+    {
+        "RULE",
+        "CLASSNAME",
+        "COMPCLASSNAME",
+        "DIFFERENTIALPAIR",
+        "DIFFERENTIALPAIRCLASSNAME",
     }
+)
+
+
+def _is_component_directive_parameter(name: str) -> bool:
+    return altium_name_key(name) in _COMPONENT_DIRECTIVE_PARAMETER_KEYS
 
 
 def _compiled_component_group_pin_count(group: tuple[object, ...]) -> int:
@@ -1383,10 +1584,10 @@ def _compiled_component_parameter_pair_compare(
     left: tuple[str, str],
     right: tuple[str, str],
 ) -> int:
-    name_comparison = managed_alpha_numeric_compare(left[0], right[0])
+    name_comparison = altium_alpha_numeric_compare(left[0], right[0])
     if name_comparison:
         return name_comparison
-    return managed_alpha_numeric_compare(left[1], right[1])
+    return altium_alpha_numeric_compare(left[1], right[1])
 
 
 def _compiled_component_group_inferred_all_pin_count(
@@ -1408,13 +1609,13 @@ def _compiled_managed_pin_row_compare(
     left: _CompiledManagedPinRow,
     right: _CompiledManagedPinRow,
 ) -> int:
-    comparison = managed_alpha_numeric_compare(
+    comparison = altium_alpha_numeric_compare(
         left.physical_part_designator,
         right.physical_part_designator,
     )
     if comparison:
         return comparison
-    comparison = managed_alpha_numeric_compare(left.designator, right.designator)
+    comparison = altium_alpha_numeric_compare(left.designator, right.designator)
     if comparison:
         return comparison
     comparison = int(left.inferred) - int(right.inferred)
@@ -1426,13 +1627,13 @@ def _compiled_managed_pin_row_compare(
     )
     if comparison:
         return comparison
-    comparison = managed_alpha_numeric_compare(
+    comparison = altium_alpha_numeric_compare(
         left.owner_document_name,
         right.owner_document_name,
     )
     if comparison:
         return comparison
-    comparison = managed_alpha_numeric_compare(
+    comparison = altium_alpha_numeric_compare(
         left.owner_physical_room_name,
         right.owner_physical_room_name,
     )
@@ -1446,7 +1647,7 @@ def _compiled_managed_pin_row_compare(
 _CompiledSortRow = TypeVar("_CompiledSortRow")
 
 
-def _compiled_dotnet_insertion_sort(
+def _compiled_altium_compat_insertion_sort(
     values: list[_CompiledSortRow],
     low: int,
     high: int,
@@ -1461,7 +1662,7 @@ def _compiled_dotnet_insertion_sort(
         values[prior + 1] = value
 
 
-def _compiled_dotnet_down_heap(
+def _compiled_altium_compat_down_heap(
     values: list[_CompiledSortRow],
     index: int,
     count: int,
@@ -1480,7 +1681,7 @@ def _compiled_dotnet_down_heap(
     values[low + index - 1] = value
 
 
-def _compiled_dotnet_heap_sort(
+def _compiled_altium_compat_heap_sort(
     values: list[_CompiledSortRow],
     low: int,
     high: int,
@@ -1488,13 +1689,13 @@ def _compiled_dotnet_heap_sort(
 ) -> None:
     count = high - low + 1
     for index in range(count // 2, 0, -1):
-        _compiled_dotnet_down_heap(values, index, count, low, compare)
+        _compiled_altium_compat_down_heap(values, index, count, low, compare)
     for index in range(count, 1, -1):
         values[low], values[low + index - 1] = values[low + index - 1], values[low]
-        _compiled_dotnet_down_heap(values, 1, index - 1, low, compare)
+        _compiled_altium_compat_down_heap(values, 1, index - 1, low, compare)
 
 
-def _compiled_dotnet_pick_pivot(
+def _compiled_altium_compat_pick_pivot(
     values: list[_CompiledSortRow],
     low: int,
     high: int,
@@ -1522,7 +1723,7 @@ def _compiled_dotnet_pick_pivot(
     return left
 
 
-def _compiled_dotnet_intro_sort_range(
+def _compiled_altium_compat_intro_sort_range(
     values: list[_CompiledSortRow],
     low: int,
     high: int,
@@ -1545,18 +1746,20 @@ def _compiled_dotnet_intro_sort_range(
                     if compare(values[left], values[right]) > 0:
                         values[left], values[right] = values[right], values[left]
                 return
-            _compiled_dotnet_insertion_sort(values, low, high, compare)
+            _compiled_altium_compat_insertion_sort(values, low, high, compare)
             return
         if depth_limit == 0:
-            _compiled_dotnet_heap_sort(values, low, high, compare)
+            _compiled_altium_compat_heap_sort(values, low, high, compare)
             return
         depth_limit -= 1
-        pivot = _compiled_dotnet_pick_pivot(values, low, high, compare)
-        _compiled_dotnet_intro_sort_range(values, pivot + 1, high, depth_limit, compare)
+        pivot = _compiled_altium_compat_pick_pivot(values, low, high, compare)
+        _compiled_altium_compat_intro_sort_range(
+            values, pivot + 1, high, depth_limit, compare
+        )
         high = pivot - 1
 
 
-def _compiled_dotnet_sort(
+def _compiled_altium_compat_unstable_sort(
     values: list[_CompiledSortRow],
     compare: Callable[[_CompiledSortRow, _CompiledSortRow], int],
 ) -> None:
@@ -1564,23 +1767,23 @@ def _compiled_dotnet_sort(
 
     if len(values) > 1:
         depth_limit = 2 * len(values).bit_length()
-        _compiled_dotnet_intro_sort_range(
+        _compiled_altium_compat_intro_sort_range(
             values, 0, len(values) - 1, depth_limit, compare
         )
 
 
 def _compiled_managed_pin_sort(pins: list[_CompiledManagedPinRow]) -> None:
-    _compiled_dotnet_sort(pins, _compiled_managed_pin_row_compare)
+    _compiled_altium_compat_unstable_sort(pins, _compiled_managed_pin_row_compare)
 
 
 def _compiled_physical_document_compare(
     left: AltiumCompiledPhysicalDocument,
     right: AltiumCompiledPhysicalDocument,
 ) -> int:
-    comparison = managed_alpha_numeric_compare(left.file_name, right.file_name)
+    comparison = altium_alpha_numeric_compare(left.file_name, right.file_name)
     if comparison:
         return comparison
-    return managed_alpha_numeric_compare(
+    return altium_alpha_numeric_compare(
         left.physical_room_name or left.room_name,
         right.physical_room_name or right.room_name,
     )
@@ -1590,7 +1793,7 @@ def _managed_physical_document_order(
     documents: tuple[AltiumCompiledPhysicalDocument, ...],
 ) -> tuple[AltiumCompiledPhysicalDocument, ...]:
     ordered = list(documents)
-    _compiled_dotnet_sort(ordered, _compiled_physical_document_compare)
+    _compiled_altium_compat_unstable_sort(ordered, _compiled_physical_document_compare)
     return tuple(ordered)
 
 
@@ -1658,6 +1861,81 @@ def _compiled_pin_is_common(
     return evidence.raw_pins[pin.source_index].owner_part_id == 0
 
 
+def _compiled_single_part_common_signal_ids(
+    physical_document_id: str,
+    evidence: _CompiledComponentPinEvidence,
+    global_signal_ids_by_pin: Mapping[tuple[str, int], str],
+) -> dict[str, set[str]]:
+    result: dict[str, set[str]] = defaultdict(set)
+    for pin in evidence.active_pins:
+        if not _compiled_pin_is_common(evidence, pin):
+            continue
+        signal_id = global_signal_ids_by_pin.get(
+            (physical_document_id, pin.source_pin_object_id)
+        )
+        if signal_id is not None:
+            result[pin.designator].add(signal_id)
+    return result
+
+
+def _compiled_single_part_pin_signal_ids(
+    physical_document_id: str,
+    evidence: _CompiledComponentPinEvidence,
+    pin: _CompiledManagedPinRow,
+    common_signal_ids: Mapping[str, set[str]],
+    global_signal_ids_by_pin: Mapping[tuple[str, int], str],
+) -> tuple[str | None, str | None]:
+    local_signal_id = (
+        f"{physical_document_id}:{pin.local_signal_id}"
+        if pin.local_signal_id is not None
+        else None
+    )
+    global_signal_id = (
+        global_signal_ids_by_pin.get((physical_document_id, pin.source_pin_object_id))
+        if local_signal_id is not None
+        else None
+    )
+    if global_signal_id is not None:
+        return local_signal_id, global_signal_id
+    if not _compiled_pin_is_common(evidence, pin):
+        return local_signal_id, local_signal_id
+    candidates = common_signal_ids.get(pin.designator, set())
+    if len(candidates) == 1:
+        return local_signal_id, next(iter(candidates))
+    return None, None
+
+
+def _compiled_complete_single_part_pin_count(
+    occurrence: tuple[str, str, _CompiledComponentPinEvidence],
+    global_signal_ids_by_pin: Mapping[tuple[str, int], str],
+) -> int:
+    physical_document_id, _physical_room_name, evidence = occurrence
+    common_signal_ids = _compiled_single_part_common_signal_ids(
+        physical_document_id,
+        evidence,
+        global_signal_ids_by_pin,
+    )
+    pins = list(evidence.active_pins)
+    _compiled_managed_pin_sort(pins)
+    resolved: list[_CompiledManagedPinCountRow] = []
+    for pin in pins:
+        local_signal_id, global_signal_id = _compiled_single_part_pin_signal_ids(
+            physical_document_id,
+            evidence,
+            pin,
+            common_signal_ids,
+            global_signal_ids_by_pin,
+        )
+        resolved.append(
+            _CompiledManagedPinCountRow(
+                designator=pin.designator,
+                local_signal_id=local_signal_id,
+                global_signal_id=global_signal_id,
+            )
+        )
+    return _compiled_merged_managed_pin_count(resolved)
+
+
 def _compiled_append_unused_managed_pins(
     pins: list[_CompiledManagedPinRow],
     ordered: Sequence[tuple[str, str, _CompiledComponentPinEvidence]],
@@ -1699,7 +1977,7 @@ def _compiled_append_unused_managed_pins(
 
 
 def _compiled_merged_managed_pin_count(
-    pins: Sequence[_CompiledManagedPinRow],
+    pins: Sequence[_CompiledManagedPinRow | _CompiledManagedPinCountRow],
 ) -> int:
     duplicate_indices: set[int] = set()
     for pin_index, pin in enumerate(pins[:-1]):
@@ -1707,7 +1985,7 @@ def _compiled_merged_managed_pin_count(
             continue
         for candidate_index in range(pin_index + 1, len(pins)):
             candidate = pins[candidate_index]
-            if managed_alpha_numeric_compare(pin.designator, candidate.designator):
+            if altium_alpha_numeric_compare(pin.designator, candidate.designator):
                 break
             if (
                 pin.global_signal_id == candidate.global_signal_id
@@ -1723,13 +2001,22 @@ def _compiled_managed_pin_count(
 ) -> int:
     if not evidence_occurrences:
         return 0
+    if (
+        len(evidence_occurrences) == 1
+        and evidence_occurrences[0][2].subparts_count <= 1
+    ):
+        return _compiled_complete_single_part_pin_count(
+            evidence_occurrences[0],
+            global_signal_ids_by_pin,
+        )
     ordered = sorted(
         evidence_occurrences,
         key=lambda item: item[2].current_part_id,
     )
     pins = _compiled_active_managed_pins(ordered, global_signal_ids_by_pin)
     _compiled_append_unused_managed_pins(pins, ordered)
-    _compiled_managed_pin_sort(pins)
+    if len(ordered) > 1 or ordered[0][2].subparts_count > len(ordered):
+        _compiled_managed_pin_sort(pins)
     return _compiled_merged_managed_pin_count(pins)
 
 
@@ -1744,8 +2031,8 @@ def _collapse_multipart_component_rows(
         ):
             groups.append([component])
             continue
-        key = dotnet_ordinal_ignore_case_key(component.physical_designator)
-        design_item_key = dotnet_ordinal_ignore_case_key(component.design_item_id)
+        key = altium_name_key(component.physical_designator)
+        design_item_key = altium_name_key(component.design_item_id)
         candidate_groups = groups_by_designator.setdefault(key, [])
         existing_index: int | None = None
         for result_index, part_ids, candidate_design_item_key in candidate_groups:
@@ -1783,7 +2070,7 @@ def _merge_compiled_component_group(
     identity = max(group, key=lambda component: component.current_part_id)
     footprint = min(
         (component.footprint for component in group),
-        key=cmp_to_key(managed_alpha_numeric_compare),
+        key=cmp_to_key(altium_alpha_numeric_compare),
     )
     parameters = _merged_compiled_row_parameters(group)
     identity_parent = definition.source_unique_id_path.rpartition("\\")[0]
@@ -1826,7 +2113,7 @@ def _merged_compiled_row_parameters(
         sorted(group, key=lambda row: row.current_part_id)
     ):
         for name, text in component.parameters:
-            key = dotnet_ordinal_ignore_case_key(name)
+            key = altium_name_key(name)
             if _is_component_directive_parameter(name):
                 selected.append((name, text))
                 continue
@@ -1836,7 +2123,7 @@ def _merged_compiled_row_parameters(
             selected.append((name, text))
         if part_index == 0:
             seen_ordinary.update(
-                dotnet_ordinal_ignore_case_key(name)
+                altium_name_key(name)
                 for name in (
                     "Comment",
                     "Description",
@@ -1847,17 +2134,14 @@ def _merged_compiled_row_parameters(
             )
     selected.sort(
         key=cmp_to_key(
-            lambda left, right: managed_alpha_numeric_compare(left[0], right[0])
+            lambda left, right: altium_alpha_numeric_compare(left[0], right[0])
         )
     )
     result: list[tuple[str, str]] = []
     seen_directives: set[str] = set()
     for name, text in selected:
         if _is_component_directive_parameter(name):
-            directive_key = (
-                f"{dotnet_ordinal_ignore_case_key(name)}\0"
-                f"{dotnet_ordinal_ignore_case_key(text)}"
-            )
+            directive_key = f"{altium_name_key(name)}\0{altium_name_key(text)}"
             if directive_key in seen_directives:
                 continue
             seen_directives.add(directive_key)
@@ -1926,12 +2210,12 @@ def _compiled_net_name_annotation(
 ) -> str | None:
     if annotation is None:
         return None
-    name_key = dotnet_ordinal_ignore_case_key(name)
+    name_key = altium_name_key(name)
     return next(
         (
             row.override_net_name
             for row in reversed(annotation.net_names)
-            if dotnet_ordinal_ignore_case_key(row.original_net_name) == name_key
+            if altium_name_key(row.original_net_name) == name_key
         ),
         None,
     )
@@ -1945,17 +2229,17 @@ def _project_differential_pair_suffixes(
     source_lines = getattr(project, "_source_lines", ())
     pairs: list[tuple[str, str]] = []
     for index, line in enumerate(source_lines):
-        prefix = dotnet_ordinal_ignore_case_key("[DiffPairSuffix")
-        if not dotnet_ordinal_ignore_case_key(line).startswith(prefix):
+        prefix = altium_name_key("[DiffPairSuffix")
+        if not altium_name_key(line).startswith(prefix):
             continue
         if index + 2 >= len(source_lines):
             continue
         positive_line = source_lines[index + 1]
         negative_line = source_lines[index + 2]
-        if not dotnet_ordinal_ignore_case_key(positive_line).startswith(
-            dotnet_ordinal_ignore_case_key("Positive=")
-        ) or not dotnet_ordinal_ignore_case_key(negative_line).startswith(
-            dotnet_ordinal_ignore_case_key("Negative=")
+        if not altium_name_key(positive_line).startswith(
+            altium_name_key("Positive=")
+        ) or not altium_name_key(negative_line).startswith(
+            altium_name_key("Negative=")
         ):
             continue
         pairs.append(
@@ -1975,12 +2259,9 @@ def _compiled_strip_diff_pair_suffix(
     if index < 0:
         return name, ""
     suffix = name[index:]
-    suffix_key = dotnet_ordinal_ignore_case_key(suffix)
+    suffix_key = altium_name_key(suffix)
     candidates = ("_P", "_N", *(value for pair in configured_pairs for value in pair))
-    if any(
-        dotnet_ordinal_ignore_case_key(candidate) == suffix_key
-        for candidate in candidates
-    ):
+    if any(altium_name_key(candidate) == suffix_key for candidate in candidates):
         return name[:index], suffix
     return name, ""
 
@@ -2003,7 +2284,7 @@ def _physical_channel_net_name(
     differential_pair_suffixes: tuple[tuple[str, str], ...] = (),
     nonlocal_hierarchical_power: bool = False,
 ) -> str:
-    if not dotnet_trim(local_net.name):
+    if not trim_altium_whitespace(local_net.name):
         return local_net.name
     if nonlocal_hierarchical_power:
         return local_net.name
@@ -2351,12 +2632,11 @@ def _inferred_harness_endpoint_applies(
     if not endpoint._harness_type_inferred:
         return True
     allowed_types = allowed_types_by_name.get(
-        dotnet_ordinal_ignore_case_key(endpoint._harness_interface_name), ()
+        altium_name_key(endpoint._harness_interface_name), ()
     )
-    endpoint_type_key = dotnet_ordinal_ignore_case_key(endpoint._harness_type_name)
+    endpoint_type_key = altium_name_key(endpoint._harness_type_name)
     return any(
-        dotnet_ordinal_ignore_case_key(type_name) == endpoint_type_key
-        for type_name in allowed_types
+        altium_name_key(type_name) == endpoint_type_key for type_name in allowed_types
     )
 
 
@@ -2419,19 +2699,16 @@ def _compiled_sheet_entry_endpoint_is_linked(
     if endpoint.role != "sheet_entry":
         return False
     if endpoint.object_id and (
-        dotnet_ordinal_ignore_case_key(endpoint.object_id) in linked_sheet_entry_ids
+        altium_name_key(endpoint.object_id) in linked_sheet_entry_ids
     ):
         return True
     if not endpoint.element_id:
         return False
-    element_key = dotnet_ordinal_ignore_case_key(endpoint.element_id)
+    element_key = altium_name_key(endpoint.element_id)
     if element_key in linked_sheet_entry_ids:
         return True
     duplicate_base, separator, _suffix = endpoint.element_id.partition(":duplicate:")
-    return bool(
-        separator
-        and dotnet_ordinal_ignore_case_key(duplicate_base) in linked_sheet_entry_ids
-    )
+    return bool(separator and altium_name_key(duplicate_base) in linked_sheet_entry_ids)
 
 
 def _compiled_items_from_graphical(
@@ -2644,14 +2921,14 @@ def _compiled_net_has_endpoint(
     net: AltiumCompiledNet, role: str, object_id: str
 ) -> bool:
     clean_role = str(role or "").lower()
-    clean_object_id = dotnet_ordinal_ignore_case_key(str(object_id or ""))
+    clean_object_id = altium_name_key(str(object_id or ""))
     if not clean_role or not clean_object_id:
         return False
     return any(
         endpoint.role.lower() == clean_role
         and (
-            dotnet_ordinal_ignore_case_key(endpoint.element_id) == clean_object_id
-            or dotnet_ordinal_ignore_case_key(endpoint.object_id) == clean_object_id
+            altium_name_key(endpoint.element_id) == clean_object_id
+            or altium_name_key(endpoint.object_id) == clean_object_id
         )
         for endpoint in net.endpoints
     )
@@ -2854,9 +3131,9 @@ def _compiled_pin_hotspot(value: object) -> RootPoint:
 def _repeat_parts(designator: str) -> tuple[bool, str | None, int | None, int | None]:
     value = str(designator or "")
     opening = value.find("(")
-    if opening < 0 or dotnet_ordinal_ignore_case_key(
-        dotnet_trim(value[:opening])
-    ) != dotnet_ordinal_ignore_case_key("REPEAT"):
+    if opening < 0 or altium_name_key(
+        trim_altium_whitespace(value[:opening])
+    ) != altium_name_key("REPEAT"):
         return False, None, None, None
     closing = value.find(")", opening + 1)
     if closing < 0:
@@ -2867,7 +3144,7 @@ def _repeat_parts(designator: str) -> tuple[bool, str | None, int | None, int | 
     repeat_range = _portable_repeat_range(parts[1], parts[2])
     if repeat_range is None:
         return False, None, None, None
-    return True, dotnet_trim(parts[0]), *repeat_range
+    return True, trim_altium_whitespace(parts[0]), *repeat_range
 
 
 def _portable_repeat_range(first: str, last: str) -> tuple[int, int] | None:
@@ -3098,7 +3375,7 @@ def _updated_repeat_values_for_child(
     result: dict[tuple[str, int], int] = {}
     rows = sorted(
         parent_rows,
-        key=lambda row: (dotnet_ordinal_ignore_case_sort_key(row[0]), row[1]),
+        key=lambda row: (altium_name_sort_key(row[0]), row[1]),
     )
     previous_name_key = ""
     next_value = 0 if new_indexing else 1
@@ -3108,7 +3385,7 @@ def _updated_repeat_values_for_child(
             next_value = 0 if new_indexing else 1
             continue
 
-        instance_name_key = dotnet_ordinal_ignore_case_key(instance_name)
+        instance_name_key = altium_name_key(instance_name)
         same_instance = instance_name_key == previous_name_key
         if new_indexing:
             if not same_instance:
@@ -3173,7 +3450,7 @@ def _multi_reference_channel_rooms(
         ordered_symbols = sorted(
             symbols,
             key=cmp_to_key(
-                lambda left, right: managed_alpha_numeric_compare(
+                lambda left, right: altium_alpha_numeric_compare(
                     left.designator,
                     right.designator,
                 )
@@ -3304,7 +3581,7 @@ def _repeat_channel_alpha_room_name(
     value = _managed_repeat_channel_value(document)
     if compile_options.new_indexing_of_sheet_symbols:
         value += 1
-    return f"{managed_designator_prefix(room_name)}{_compiled_alpha_index(value)}"
+    return f"{altium_designator_prefix(room_name)}{_compiled_alpha_index(value)}"
 
 
 def _component_naming_room_name(
@@ -3398,13 +3675,13 @@ def _has_duplicate_bottom_designator(
     document: AltiumCompiledPhysicalDocument,
     physical_document_by_id: Mapping[str, AltiumCompiledPhysicalDocument],
 ) -> bool:
-    source_key = dotnet_ordinal_ignore_case_key(document.room_name)
+    source_key = altium_name_key(document.room_name)
     return any(
         row.parent_id is not None
         and row.logical_document_id == document.logical_document_id
         and row._managed_parent_sheet_symbol_source_id
         != document._managed_parent_sheet_symbol_source_id
-        and dotnet_ordinal_ignore_case_key(row.room_name) == source_key
+        and altium_name_key(row.room_name) == source_key
         for row in physical_document_by_id.values()
     )
 
@@ -3615,8 +3892,7 @@ def _channel_differentiate_values(
         sequence = 0
         for row in rows:
             if previous_designator is None or (
-                dotnet_ordinal_ignore_case_key(previous_designator)
-                != dotnet_ordinal_ignore_case_key(row.room_name)
+                altium_name_key(previous_designator) != altium_name_key(row.room_name)
             ):
                 sequence = 1
             else:
@@ -3675,7 +3951,7 @@ def _managed_hierarchy_path_compare(
     right: tuple[str, ...],
 ) -> int:
     for left_level, right_level in zip(left, right, strict=False):
-        result = managed_alpha_numeric_compare(left_level, right_level)
+        result = altium_alpha_numeric_compare(left_level, right_level)
         if result:
             return result
     return _compare_values(len(left), len(right))
@@ -3698,8 +3974,8 @@ def _managed_channel_info(
 
 def _managed_channel_identity(info: _ManagedChannelInfo) -> tuple[object, ...]:
     return (
-        dotnet_ordinal_ignore_case_sort_key(info.schematic_name),
-        dotnet_ordinal_ignore_case_sort_key(info.channel_name),
+        altium_name_sort_key(info.schematic_name),
+        altium_name_sort_key(info.channel_name),
         info.from_repeat_sheet_symbol,
         info.sheet_symbol_index,
         info.sheet_symbol_location,
@@ -3717,12 +3993,12 @@ def _managed_channel_info_compare(
     right: _ManagedChannelInfo,
 ) -> int:
     result = _compare_values(
-        dotnet_ordinal_ignore_case_sort_key(left.schematic_name),
-        dotnet_ordinal_ignore_case_sort_key(right.schematic_name),
+        altium_name_sort_key(left.schematic_name),
+        altium_name_sort_key(right.schematic_name),
     )
     if result:
         return result
-    result = managed_alpha_numeric_compare(left.channel_name, right.channel_name)
+    result = altium_alpha_numeric_compare(left.channel_name, right.channel_name)
     if result:
         return result
     result = _compare_values(
@@ -3744,8 +4020,8 @@ def _managed_channel_info_compare(
     if result:
         return result
     return _compare_values(
-        dotnet_ordinal_ignore_case_sort_key(left.sheet_symbol_id),
-        dotnet_ordinal_ignore_case_sort_key(right.sheet_symbol_id),
+        altium_name_sort_key(left.sheet_symbol_id),
+        altium_name_sort_key(right.sheet_symbol_id),
     )
 
 
@@ -3963,18 +4239,6 @@ def _effective_bridge_scope_options(
     )
 
 
-def _compiled_only_retained_single_pin_net(net: object) -> bool:
-    return bool(getattr(net, "_single_pin_retention_only", False))
-
-
-def _effective_bridge_baseline_nets(netlist: object) -> tuple[object, ...]:
-    return tuple(
-        net
-        for net in cast(Iterable[object], getattr(netlist, "nets", ()) or ())
-        if not _compiled_only_retained_single_pin_net(net)
-    )
-
-
 def _local_net_by_wire_root(
     local_nets: Sequence[object],
     root_by_wire_id: Mapping[str, RootPoint],
@@ -4175,8 +4439,7 @@ def _annotate_sheet_symbol_harness_ports(
 def _prefer_managed_local_net_spelling(net: object, candidate: str) -> None:
     current = str(getattr(net, "name", "") or "")
     if (
-        dotnet_ordinal_ignore_case_key(candidate)
-        == dotnet_ordinal_ignore_case_key(current)
+        altium_name_key(candidate) == altium_name_key(current)
         and _compiled_managed_source_name_comparison(candidate, current) < 0
     ):
         setattr(net, "name", candidate)
@@ -4956,14 +5219,14 @@ def _unique_connected_typed_port_interface(
     harness_type_name: str,
     type_names: Mapping[int, str],
 ) -> _TypedHarnessInterface | None:
-    name_key = dotnet_ordinal_ignore_case_key(harness_port_name)
-    type_key = dotnet_ordinal_ignore_case_key(harness_type_name)
+    name_key = altium_name_key(harness_port_name)
+    type_key = altium_name_key(harness_type_name)
     matches = tuple(
         interface
         for interface in _typed_harness_interfaces(schdoc)
         if interface.role == "port"
-        and dotnet_ordinal_ignore_case_key(interface.name) == name_key
-        and dotnet_ordinal_ignore_case_key(interface.type_name) == type_key
+        and altium_name_key(interface.name) == name_key
+        and altium_name_key(interface.type_name) == type_key
         and _typed_port_interface_has_signal_harness_carrier(
             schdoc, interface, type_names
         )
@@ -5330,7 +5593,7 @@ def _select_harness_definition_nested_type(
         if connected_output_types:
             return min(
                 connected_output_types,
-                key=cmp_to_key(managed_alpha_numeric_compare),
+                key=cmp_to_key(altium_alpha_numeric_compare),
             )
         return authored_type
     return "" if non_harness_connected else authored_type
@@ -5478,7 +5741,7 @@ def _append_inferred_port_harness_types(
         type_name = str(getattr(entry, "harness_type", "") or "")
         entry_name = _inter_sheet_entry_display_name(entry)
         port_name = _sheet_symbol_child_port_name(symbol, entry_name)
-        key = dotnet_ordinal_ignore_case_key(port_name)
+        key = altium_name_key(port_name)
         if type_name and type_name not in inferred[id(child)][key]:
             inferred[id(child)][key].append(type_name)
 
@@ -5577,13 +5840,11 @@ def _fallback_sheet_entry_name_key(
     entry_name = _inter_sheet_entry_display_name(entry)
     if not authored_type or not entry_name:
         return None
-    if dotnet_ordinal_ignore_case_key(authored_type) in project_definitions:
+    if altium_name_key(authored_type) in project_definitions:
         return None
     if _sheet_entry_is_compile_masked(entry, symbol, compile_masks):
         return None
-    return dotnet_ordinal_ignore_case_key(
-        _sheet_symbol_child_port_name(symbol, entry_name)
-    )
+    return altium_name_key(_sheet_symbol_child_port_name(symbol, entry_name))
 
 
 def _matching_child_port_harness_definitions(
@@ -5598,7 +5859,7 @@ def _matching_child_port_harness_definitions(
     for interface in _typed_harness_interfaces(child, inferred_port_types):
         if interface.role != "port":
             continue
-        if dotnet_ordinal_ignore_case_key(interface.name) != name_key:
+        if altium_name_key(interface.name) != name_key:
             continue
         definition = _definition_for_typed_harness_interface(
             interface, project_definitions, local_definitions
@@ -5614,9 +5875,9 @@ def _append_unique_fallback_harness_member(
     member: ResolvedHarnessMember,
 ) -> None:
     member_key = (
-        tuple(dotnet_ordinal_ignore_case_key(segment.value) for segment in member.path),
+        tuple(altium_name_key(segment.value) for segment in member.path),
         member.bus_signal_index,
-        dotnet_ordinal_ignore_case_key(member.signal_name),
+        altium_name_key(member.signal_name),
     )
     if member_key not in seen:
         seen.add(member_key)
@@ -5641,7 +5902,7 @@ def _typed_port_occurrence_key(
 ) -> tuple[str, str]:
     return (
         interface.source_occurrence_id,
-        dotnet_ordinal_ignore_case_key(interface.type_name),
+        altium_name_key(interface.type_name),
     )
 
 
@@ -5658,7 +5919,7 @@ def _typed_port_harness_interfaces(
             port_index=port_index,
             compile_masks=compile_masks,
             inferred_types=inferred_port_types.get(
-                dotnet_ordinal_ignore_case_key(str(port.name or "")), ()
+                altium_name_key(str(port.name or "")), ()
             ),
         )
     )
@@ -5694,7 +5955,7 @@ def _typed_port_harness_interface_rows(
         if authored_type
         else ()
     )
-    authored_key = dotnet_ordinal_ignore_case_key(authored_type)
+    authored_key = altium_name_key(authored_type)
     inferred_rows = tuple(
         _TypedHarnessInterface(
             name=name,
@@ -5705,7 +5966,7 @@ def _typed_port_harness_interface_rows(
             type_inferred=True,
         )
         for type_name in inferred_types
-        if dotnet_ordinal_ignore_case_key(type_name) != authored_key
+        if altium_name_key(type_name) != authored_key
     )
     return (*authored_rows, *inferred_rows)
 
@@ -5978,12 +6239,12 @@ def _typed_port_interface_has_signal_harness_carrier(
 def _typed_harness_interface_port(
     schdoc: "AltiumSchDoc", interface: _TypedHarnessInterface
 ) -> object | None:
-    interface_object_key = dotnet_ordinal_ignore_case_key(interface.object_id)
+    interface_object_key = altium_name_key(interface.object_id)
     return next(
         (
             row
             for row in schdoc.get_ports()
-            if dotnet_ordinal_ignore_case_key(str(getattr(row, "unique_id", "") or ""))
+            if altium_name_key(str(getattr(row, "unique_id", "") or ""))
             == interface_object_key
         ),
         None,
@@ -6003,9 +6264,9 @@ def _harness_connector_output_matches_interface(
 ) -> bool:
     connector = getattr(info, "record", info)
     master_point = _harness_connector_master_entry_point(connector)
-    if dotnet_ordinal_ignore_case_key(
-        type_names[id(connector)]
-    ) != dotnet_ordinal_ignore_case_key(interface.type_name):
+    if altium_name_key(type_names[id(connector)]) != altium_name_key(
+        interface.type_name
+    ):
         return False
     if _compiled_point_inside_any_mask(master_point, compile_masks):
         return False
@@ -6043,10 +6304,10 @@ def _append_fallback_sheet_entry_harness_members(
     for interface in connected_interfaces:
         for member in members_by_occurrence[interface.source_occurrence_id]:
             member_key = (
-                dotnet_ordinal_ignore_case_key(interface.name),
+                altium_name_key(interface.name),
                 _harness_path_key(_runtime_harness_entries_path(member)),
                 member.bus_signal_index,
-                dotnet_ordinal_ignore_case_key(member.signal_name),
+                altium_name_key(member.signal_name),
             )
             grouped.setdefault(member_key, (member, []))[1].append(interface)
     for member, member_interfaces in grouped.values():
@@ -6125,7 +6386,7 @@ def _definition_for_typed_harness_interface(
     project_definitions: Mapping[str, ResolvedHarnessDefinition],
     local_definitions: Mapping[str, ResolvedHarnessDefinition],
 ) -> ResolvedHarnessDefinition | None:
-    key = dotnet_ordinal_ignore_case_key(interface.type_name)
+    key = altium_name_key(interface.type_name)
     if interface.role == "port":
         local = local_definitions.get(key)
         if local is not None:
@@ -6161,10 +6422,8 @@ def _annotate_existing_typed_harness_member(
         if not reject_different_port
         or not any(
             str(getattr(endpoint, "role", "") or "") == "port"
-            and dotnet_ordinal_ignore_case_key(
-                str(getattr(endpoint, "object_id", "") or "")
-            )
-            != dotnet_ordinal_ignore_case_key(interface.object_id)
+            and altium_name_key(str(getattr(endpoint, "object_id", "") or ""))
+            != altium_name_key(interface.object_id)
             for endpoint in getattr(net, "endpoints", ())
         )
         if any(
@@ -6207,15 +6466,13 @@ def _local_harness_member_endpoint_matches(
 ) -> bool:
     if str(getattr(endpoint, "role", "") or "") != "harness_entry":
         return False
-    if dotnet_ordinal_ignore_case_key(
-        str(getattr(endpoint, "name", "") or "")
-    ) != dotnet_ordinal_ignore_case_key(endpoint_name):
+    if altium_name_key(str(getattr(endpoint, "name", "") or "")) != altium_name_key(
+        endpoint_name
+    ):
         return False
     object_id = str(getattr(endpoint, "object_id", "") or "")
     if leaf_source_identity and object_id:
-        return dotnet_ordinal_ignore_case_key(
-            object_id
-        ) == dotnet_ordinal_ignore_case_key(leaf_source_identity)
+        return altium_name_key(object_id) == altium_name_key(leaf_source_identity)
     return True
 
 
@@ -6226,7 +6483,7 @@ def _runtime_harness_entries_path(
 
 
 def _harness_path_key(path: Sequence[str]) -> tuple[str, ...]:
-    return tuple(dotnet_ordinal_ignore_case_key(value) for value in path)
+    return tuple(altium_name_key(value) for value in path)
 
 
 def _harness_path_identity(path: Sequence[str]) -> str:
@@ -6264,15 +6521,12 @@ def _typed_harness_interface_matches(
 ) -> bool:
     if endpoint_role not in {interface.role, "harness_port"}:
         return False
-    if dotnet_ordinal_ignore_case_key(interface.name) != dotnet_ordinal_ignore_case_key(
-        endpoint_name
-    ):
+    if altium_name_key(interface.name) != altium_name_key(endpoint_name):
         return False
     return (
         not endpoint_object_id
         or not interface.object_id
-        or dotnet_ordinal_ignore_case_key(interface.object_id)
-        == dotnet_ordinal_ignore_case_key(endpoint_object_id)
+        or altium_name_key(interface.object_id) == altium_name_key(endpoint_object_id)
     )
 
 
@@ -6798,14 +7052,14 @@ def _linked_sheet_entry_ids_for_symbol(
     if not children:
         return ()
     child_port_names = {
-        dotnet_ordinal_ignore_case_key(name)
+        altium_name_key(name)
         for child in children
         for name in _active_child_port_relative_names(child)
     }
     return tuple(
         identity
         for entry in symbol.entries
-        if dotnet_ordinal_ignore_case_key(
+        if altium_name_key(
             _sheet_symbol_child_port_name(
                 symbol, _inter_sheet_entry_display_name(entry)
             )
@@ -6865,7 +7119,7 @@ def _collect_linked_symbol_interface_ids(
         schdoc_by_file_name=schdoc_by_file_name,
     )
     for entry in symbol.entries:
-        entry_name = dotnet_ordinal_ignore_case_key(
+        entry_name = altium_name_key(
             _sheet_symbol_child_port_name(
                 symbol, _inter_sheet_entry_display_name(entry)
             )
@@ -6880,7 +7134,7 @@ def _collect_linked_symbol_interface_ids(
             )
             for child_logical_id in child_logical_ids:
                 eligible_ids[child_logical_id].update(
-                    dotnet_ordinal_ignore_case_key(port.unique_id)
+                    altium_name_key(port.unique_id)
                     for port in matching_ports
                     if port.unique_id
                 )
@@ -6894,8 +7148,7 @@ def _matching_active_child_ports(
         port
         for port in child.get_ports()
         if not _port_is_compile_masked(port, compile_masks)
-        and entry_name
-        in {dotnet_ordinal_ignore_case_key(name) for name in _port_relative_names(port)}
+        and entry_name in {altium_name_key(name) for name in _port_relative_names(port)}
     )
 
 
@@ -6945,11 +7198,7 @@ def _sheet_entry_identity_keys(
     entry_uid = str(getattr(entry, "unique_id", "") or "")
     symbol_uid = str(getattr(symbol, "unique_id", "") or "")
     element_id = f"{symbol_uid}_{entry_name}" if symbol_uid and entry_name else ""
-    return tuple(
-        dotnet_ordinal_ignore_case_key(value)
-        for value in (entry_uid, element_id)
-        if value
-    )
+    return tuple(altium_name_key(value) for value in (entry_uid, element_id) if value)
 
 
 def _harness_entry_parent_id(name: str) -> str:
@@ -7114,21 +7363,21 @@ def _sheet_number_annotation_for_row(
     row: AltiumCompiledPhysicalDocument,
     records: tuple[_SheetNumberAnnotation, ...],
 ) -> _SheetNumberAnnotation | None:
-    file_name = dotnet_ordinal_ignore_case_key(row.file_name)
+    file_name = altium_name_key(row.file_name)
     candidates = [
         record
         for record in records
-        if dotnet_ordinal_ignore_case_key(record.document_name) == file_name
+        if altium_name_key(record.document_name) == file_name
     ]
     if len(candidates) == 1:
         return candidates[0]
     if len(candidates) < 2:
         return None
-    unique_id_path = dotnet_ordinal_ignore_case_key(row.physical_instance_unique_id)
+    unique_id_path = altium_name_key(row.physical_instance_unique_id)
     path_matches = [
         record
         for record in candidates
-        if dotnet_ordinal_ignore_case_key(record.unique_id_path) == unique_id_path
+        if altium_name_key(record.unique_id_path) == unique_id_path
     ]
     return path_matches[0] if len(path_matches) == 1 else None
 
@@ -7174,7 +7423,7 @@ def _managed_document_name_compare(
     left: AltiumCompiledLogicalDocument,
     right: AltiumCompiledLogicalDocument,
 ) -> int:
-    return managed_alpha_numeric_compare(
+    return altium_alpha_numeric_compare(
         Path(left.file_name).stem,
         Path(right.file_name).stem,
     )
@@ -7385,12 +7634,12 @@ def _managed_sheet_symbol_names(raw_file_name: str) -> tuple[str, ...]:
     names: list[str] = []
     seen: set[str] = set()
     for raw_name in raw_file_name.split(";"):
-        name = dotnet_trim(raw_name)
+        name = trim_altium_whitespace(raw_name)
         if not name:
             continue
         if name.lower().endswith((".schdoc", ".schdot", ".sch")):
             name = name.replace("\\", "/").rsplit("/", 1)[-1].rsplit(".", 1)[0]
-        key = dotnet_ordinal_ignore_case_key(name)
+        key = altium_name_key(name)
         if key not in seen:
             seen.add(key)
             names.append(name)
@@ -7416,8 +7665,7 @@ def _managed_child_resolution(
     child_ids = tuple(
         child_id
         for name in names
-        if (child_id := logical_id_by_name.get(dotnet_ordinal_ignore_case_key(name)))
-        is not None
+        if (child_id := logical_id_by_name.get(altium_name_key(name))) is not None
         and child_id != owner_id
     )
     child_paths = tuple(source_path_by_logical_id[child_id] for child_id in child_ids)
@@ -7431,9 +7679,9 @@ def _managed_child_resolution(
         child_paths[0]
     ):
         match_kind = "source_path"
-    elif dotnet_ordinal_ignore_case_key(
+    elif altium_name_key(
         raw_file_name.strip().replace("\\", "/").rsplit("/", 1)[-1]
-    ) == dotnet_ordinal_ignore_case_key(file_name_by_logical_id[child_ids[0]]):
+    ) == altium_name_key(file_name_by_logical_id[child_ids[0]]):
         match_kind = "file_name"
     else:
         match_kind = "file_stem"
@@ -7447,8 +7695,7 @@ def _managed_interface_child_ids(
     return tuple(
         child_id
         for name in _managed_sheet_symbol_names(raw_file_name)
-        if (child_id := logical_id_by_name.get(dotnet_ordinal_ignore_case_key(name)))
-        is not None
+        if (child_id := logical_id_by_name.get(altium_name_key(name))) is not None
     )
 
 
@@ -7514,7 +7761,7 @@ def _build_logical_and_symbol_rows(
         source_path_by_logical_id[logical_id] = source_path
         file_name_by_logical_id[logical_id] = file_name
         logical_id_by_managed_name.setdefault(
-            dotnet_ordinal_ignore_case_key(Path(file_name).stem),
+            altium_name_key(Path(file_name).stem),
             logical_id,
         )
 
@@ -7657,6 +7904,14 @@ def _compiled_component_source_infos(
     cross_document_multipart_designators: set[str],
     sheet_parameters: Mapping[str, str] | None = None,
     hierarchy_parameters: Mapping[str, str] | None = None,
+    authored_parameters_by_source_object_id: dict[
+        int, tuple[_CompiledComponentParameter, ...]
+    ]
+    | None = None,
+    parameter_name_order_by_source_object_id: dict[
+        int, _CompiledComponentParameterNameOrder
+    ]
+    | None = None,
 ) -> tuple[_CompiledComponentSourceInfo, ...]:
     logical_components = component_source_rows_by_logical_id.get(
         logical_document_id,
@@ -7666,57 +7921,66 @@ def _compiled_component_source_infos(
         logical_document_id,
         (),
     )
+    expression_base_values = _component_document_expression_values(
+        options,
+        sheet_parameters=sheet_parameters,
+        hierarchy_parameters=hierarchy_parameters,
+    )
     infos: list[_CompiledComponentSourceInfo] = []
     for source_index, component in _compiler_source_rows(logical_components):
         component_group = (component,)
         definition_component = _compiled_component_group_definition(component_group)
         identity_component = _compiled_component_group_identity(component_group)
         full_designator_component = component_group[0]
-        merged_parameters = _compiled_component_group_parameters(
+        authored_parameters = _compiled_component_authored_parameters(
             component_group,
-            options,
-            sheet_parameters,
-            hierarchy_parameters,
+            authored_parameters_by_source_object_id,
         )
-        definition_parameters = _compiled_component_group_parameters(
-            (definition_component,),
-            options,
-            sheet_parameters,
-            hierarchy_parameters,
+        parameter_name_order = _compiled_component_parameter_name_order(
+            definition_component,
+            authored_parameters,
+            parameter_name_order_by_source_object_id,
         )
+        merged_parameters = _evaluate_component_parameter_map(
+            definition_component,
+            authored_parameters,
+            options,
+            sheet_parameters=sheet_parameters,
+            hierarchy_parameters=hierarchy_parameters,
+            expression_base_values=expression_base_values,
+            parameter_name_order=parameter_name_order,
+        )
+        definition_parameters = merged_parameters
         definition_parameter_values = {
-            dotnet_ordinal_ignore_case_key(parameter.name): parameter.text
+            parameter.identity_key: parameter.text
             for parameter in definition_parameters
         }
-        evaluated_comment = definition_parameter_values.get(
-            dotnet_ordinal_ignore_case_key("Comment"),
-            _evaluate_component_field(
-                definition_component.comment,
-                definition_parameters,
-                definition_component,
-                options,
-                sheet_parameters=sheet_parameters,
-                hierarchy_parameters=hierarchy_parameters,
-            ),
+        evaluated_comment = _compiled_component_field_value(
+            definition_parameter_values,
+            "COMMENT",
+            definition_component.comment,
+            definition_parameters,
+            definition_component,
+            options,
+            sheet_parameters=sheet_parameters,
+            hierarchy_parameters=hierarchy_parameters,
+            expression_base_values=expression_base_values,
         )
-        evaluated_description = definition_parameter_values.get(
-            dotnet_ordinal_ignore_case_key("Description"),
-            _evaluate_component_field(
-                definition_component.description,
-                definition_parameters,
-                definition_component,
-                options,
-                sheet_parameters=sheet_parameters,
-                hierarchy_parameters=hierarchy_parameters,
-            ),
+        evaluated_description = _compiled_component_field_value(
+            definition_parameter_values,
+            "DESCRIPTION",
+            definition_component.description,
+            definition_parameters,
+            definition_component,
+            options,
+            sheet_parameters=sheet_parameters,
+            hierarchy_parameters=hierarchy_parameters,
+            expression_base_values=expression_base_values,
         )
         value = _resolve_component_display_value(
             _CompiledComponentExpressionView(
                 comment=evaluated_comment,
-                value=definition_parameter_values.get(
-                    dotnet_ordinal_ignore_case_key("Value"),
-                    "",
-                ),
+                value=definition_parameter_values.get("VALUE", ""),
                 description=evaluated_description,
                 parameters=definition_parameters,
             ),
@@ -7731,10 +7995,7 @@ def _compiled_component_source_infos(
         if not value and evaluated_comment:
             value = evaluated_comment
         parameters = tuple(
-            sorted(
-                ((parameter.name, parameter.text) for parameter in merged_parameters),
-                key=cmp_to_key(_compiled_component_parameter_pair_compare),
-            )
+            (parameter.name, parameter.text) for parameter in merged_parameters
         )
         kind_value = (
             definition_component.component_kind.value
@@ -7774,7 +8035,7 @@ def _compiled_component_source_infos(
                 ),
                 unique_id=identity_component.unique_id,
                 cross_document_multipart=(
-                    dotnet_ordinal_ignore_case_key(full_designator_component.designator)
+                    altium_name_key(full_designator_component.designator)
                     in cross_document_multipart_designators
                 ),
             )
@@ -8325,9 +8586,9 @@ def _cross_document_multipart_designators(
             if _designator_binds_multipart_records(
                 component.designator
             ) and _component_record_is_multipart(component):
-                logical_ids_by_designator[
-                    dotnet_ordinal_ignore_case_key(component.designator)
-                ].add(logical_id)
+                logical_ids_by_designator[altium_name_key(component.designator)].add(
+                    logical_id
+                )
     return {
         designator
         for designator, logical_ids in logical_ids_by_designator.items()
@@ -8391,7 +8652,7 @@ def _compiled_hierarchy_parameters(
         if symbol_info is not None:
             for name, value in _sheet_symbol_parameter_values(symbol_info):
                 symbol_parameters.setdefault(
-                    dotnet_ordinal_ignore_case_key(name),
+                    altium_name_key(name),
                     (name, value),
                 )
         parent = physical_row_by_id.get(current.parent_id)
@@ -8405,12 +8666,36 @@ def _compiled_hierarchy_parameters(
         "",
     )
     if bottom_designator:
-        values[dotnet_ordinal_ignore_case_key("SheetSymbolDesignator")] = (
+        values[altium_name_key("SheetSymbolDesignator")] = (
             "SheetSymbolDesignator",
             bottom_designator,
         )
     values.update(symbol_parameters)
     return {name: value for name, value in values.values()}
+
+
+def _compiled_component_source_context_key(
+    logical_document_id: str,
+    sheet_parameters: Mapping[str, str],
+    hierarchy_parameters: Mapping[str, str],
+) -> _ComponentSourceContextKey:
+    return (
+        logical_document_id,
+        tuple(sheet_parameters.items()),
+        tuple(hierarchy_parameters.items()),
+    )
+
+
+def _cached_component_source_infos(
+    cache: dict[_ComponentSourceContextKey, tuple[_CompiledComponentSourceInfo, ...]],
+    key: _ComponentSourceContextKey,
+    build: Callable[[], tuple[_CompiledComponentSourceInfo, ...]],
+) -> tuple[_CompiledComponentSourceInfo, ...]:
+    cached = cache.get(key)
+    if cached is None:
+        cached = build()
+        cache[key] = cached
+    return cached
 
 
 def _build_compiled_component_rows(
@@ -8465,6 +8750,17 @@ def _build_compiled_component_rows(
     component_rows: list[AltiumCompiledComponent] = []
     component_body_rows: list[AltiumCompiledComponent] = []
     physical_component_ids: dict[str, list[str]] = {}
+    # Source rows stay live for this build, so identity keys cannot be reused;
+    # a new dict on every compile makes source mutation visible on the next run.
+    authored_parameters_by_source_object_id: dict[
+        int, tuple[_CompiledComponentParameter, ...]
+    ] = {}
+    parameter_name_order_by_source_object_id: dict[
+        int, _CompiledComponentParameterNameOrder
+    ] = {}
+    source_infos_by_context: dict[
+        _ComponentSourceContextKey, tuple[_CompiledComponentSourceInfo, ...]
+    ] = {}
 
     for physical_row in physical_rows:
         naming_room = _compiled_component_naming_room(
@@ -8487,17 +8783,35 @@ def _build_compiled_component_rows(
                 sheet_symbol_designator_by_child_physical_id
             ),
         )
-        component_infos = _compiled_component_source_infos(
+        sheet_parameters = sheet_parameters_by_logical_id.get(
             physical_row.logical_document_id,
-            component_source_rows_by_logical_id=component_rows_by_logical_id,
-            compile_mask_bounds_by_logical_id=compile_mask_bounds_by_logical_id,
-            options=options,
-            cross_document_multipart_designators=(cross_document_multipart_designators),
-            sheet_parameters=sheet_parameters_by_logical_id.get(
+            {},
+        )
+        context_key = _compiled_component_source_context_key(
+            physical_row.logical_document_id,
+            sheet_parameters,
+            hierarchy_parameters,
+        )
+        component_infos = _cached_component_source_infos(
+            source_infos_by_context,
+            context_key,
+            lambda: _compiled_component_source_infos(
                 physical_row.logical_document_id,
-                {},
+                component_source_rows_by_logical_id=component_rows_by_logical_id,
+                compile_mask_bounds_by_logical_id=compile_mask_bounds_by_logical_id,
+                options=options,
+                cross_document_multipart_designators=(
+                    cross_document_multipart_designators
+                ),
+                sheet_parameters=sheet_parameters,
+                hierarchy_parameters=hierarchy_parameters,
+                authored_parameters_by_source_object_id=(
+                    authored_parameters_by_source_object_id
+                ),
+                parameter_name_order_by_source_object_id=(
+                    parameter_name_order_by_source_object_id
+                ),
             ),
-            hierarchy_parameters=hierarchy_parameters,
         )
         for component_index, component_info in enumerate(component_infos):
             component_row = _compiled_component_row_for_physical_document(
@@ -8856,7 +9170,7 @@ def _compiled_component_single_pin_local_nets(
 
     rows: list[AltiumCompiledNet] = []
     multipart = {
-        dotnet_ordinal_ignore_case_key(designator)
+        altium_name_key(designator)
         for designator in (
             *(multipart_designators or ()),
             *(local_multipart_designators or ()),
@@ -8868,7 +9182,7 @@ def _compiled_component_single_pin_local_nets(
                 continue
             component = pin.component
             logical_designator = component.designator
-            logical_designator_key = dotnet_ordinal_ignore_case_key(logical_designator)
+            logical_designator_key = altium_name_key(logical_designator)
             pin_number = pin.designator
             part_count = _component_record_subparts_count(component)
             component_part_id = _component_record_current_part_id(component)
@@ -9554,9 +9868,9 @@ def _project_multipart_designators(
             if _designator_binds_multipart_records(
                 logical_designator
             ) and _component_record_is_multipart(component):
-                placed_part_ids_by_designator[
-                    dotnet_ordinal_ignore_case_key(logical_designator)
-                ].add(_component_record_current_part_id(component))
+                placed_part_ids_by_designator[altium_name_key(logical_designator)].add(
+                    _component_record_current_part_id(component)
+                )
     return {
         designator
         for designator, part_ids in placed_part_ids_by_designator.items()
@@ -9802,7 +10116,7 @@ def _compiled_isolated_power_port_groups(
         (power_name, tuple(power_ports))
         for power_name, power_ports in sorted(
             power_ports_by_name.values(),
-            key=lambda item: dotnet_ordinal_ignore_case_sort_key(item[0]),
+            key=lambda item: altium_name_sort_key(item[0]),
         )
     )
 
@@ -9980,7 +10294,7 @@ def _append_physical_harness_occurrence_context(
         entry_name = _inter_sheet_entry_display_name(entry)
         port_name = _parse_entry_repeat(entry_name) if symbol.is_repeat else None
         port_name = port_name or entry_name
-        types = inferred[child.id][dotnet_ordinal_ignore_case_key(port_name)]
+        types = inferred[child.id][altium_name_key(port_name)]
         if type_name not in types:
             types.append(type_name)
         repeat_value = child._managed_repeat_channel_value
@@ -10009,7 +10323,7 @@ def _compiled_managed_local_net_compare(
     right: AltiumCompiledNet,
 ) -> int:
     precedence = (
-        managed_alpha_numeric_compare(left.name, right.name),
+        altium_alpha_numeric_compare(left.name, right.name),
         len(right.terminals) - len(left.terminals),
         _compiled_managed_local_item_count(right)
         - _compiled_managed_local_item_count(left),
@@ -10030,7 +10344,7 @@ def _compiled_managed_local_net_tiebreak(
     right_item = _compiled_first_managed_local_item(right)
     if left_item is None or right_item is None:
         return 0
-    owner_order = managed_alpha_numeric_compare(
+    owner_order = altium_alpha_numeric_compare(
         left.logical_document_id or "",
         right.logical_document_id or "",
     )
@@ -10165,6 +10479,12 @@ def _compile_local_connectivity(
     )
     project_multipart_designators = _project_multipart_designators(schdocs)
     compiled_local_options = replace(options, allow_single_pin_nets=True)
+    # Automatic scope resolves once per design; every sheet compiles under the
+    # same resolved hierarchy scope instead of re-probing per sheet.
+    resolved_scope_options = _effective_bridge_scope_options(
+        compiled_local_options,
+        effective_hierarchy_mode=effective_hierarchy_mode,
+    )
 
     for logical_document in logical_documents:
         document_net_rows: list[AltiumCompiledNet] = []
@@ -10184,12 +10504,24 @@ def _compile_local_connectivity(
             for label in schdoc.get_net_labels()
             if label.unique_id and getattr(label.record, "parent", None) is None
         }
-        use_bridge_scope = False
         try:
             single_sheet_compiler = AltiumNetlistSingleSheetCompiler(
                 schdoc,
-                options=compiled_local_options,
+                options=(
+                    resolved_scope_options
+                    if resolved_scope_options is not None
+                    else compiled_local_options
+                ),
             )
+            if resolved_scope_options is not None:
+                # Restrict bridge placeholder emission to interfaces that are
+                # actually linked in the hierarchy; an unset filter would treat
+                # every port and sheet-entry root as bridge-eligible.
+                single_sheet_compiler._bridge_eligible_interface_ids = (
+                    bridge_interface_ids_by_document.get(
+                        logical_document.id, frozenset()
+                    )
+                )
             local_netlist = single_sheet_compiler.generate()
             pin_roots_by_component = (
                 single_sheet_compiler._compiled_pin_roots_by_component()
@@ -10201,44 +10533,11 @@ def _compile_local_connectivity(
                     pin_roots_by_component,
                 )
             )
-            bridge_scope_options = _effective_bridge_scope_options(
-                compiled_local_options,
-                effective_hierarchy_mode=effective_hierarchy_mode,
-            )
-            if bridge_scope_options is not None:
-                source_nets = tuple(local_netlist.nets)
-                baseline_nets = _effective_bridge_baseline_nets(local_netlist)
-                bridge_eligible_interface_ids = bridge_interface_ids_by_document.get(
-                    logical_document.id
-                )
-                should_probe_bridge_scope = (
-                    bridge_eligible_interface_ids is not None and not source_nets
-                )
-                if (
-                    bridge_eligible_interface_ids is not None
-                    and not should_probe_bridge_scope
-                    and not any(getattr(net, "terminals", ()) for net in baseline_nets)
-                    and _sheet_entry_wire_endpoint_groups(schdoc, local_netlist)
-                ):
-                    should_probe_bridge_scope = True
-                if should_probe_bridge_scope:
-                    bridge_compiler = AltiumNetlistSingleSheetCompiler(
-                        schdoc,
-                        options=bridge_scope_options,
-                    )
-                    bridge_compiler._bridge_eligible_interface_ids = (
-                        bridge_eligible_interface_ids
-                    )
-                    bridge_netlist = bridge_compiler.generate()
-                    if len(_effective_bridge_baseline_nets(bridge_netlist)) > len(
-                        baseline_nets
-                    ):
-                        use_bridge_scope = True
-                    if use_bridge_scope:
-                        local_netlist = bridge_netlist
-                        harness_endpoint_stats[
-                            "effective_scope_bridge_document_count"
-                        ] += 1
+            if (
+                resolved_scope_options is not None
+                and single_sheet_compiler._emitted_bridge_net_count
+            ):
+                harness_endpoint_stats["effective_scope_bridge_document_count"] += 1
         except Exception as exc:
             diagnostic = AltiumCompileDiagnostic(
                 severity="error",
@@ -11037,7 +11336,7 @@ def _compiled_local_power_names(
         if not any(endpoint.role == "port" for endpoint in net.endpoints):
             continue
         result[net.logical_document_id].update(
-            dotnet_ordinal_ignore_case_key(endpoint.name)
+            altium_name_key(endpoint.name)
             for endpoint in net.endpoints
             if endpoint.role in {"power_port", "harness_power"} and endpoint.name
         )
@@ -11056,7 +11355,7 @@ def _compiled_is_nonlocal_hierarchical_power(
     if net.logical_document_id is None:
         return False
     names = local_power_names.get(net.logical_document_id)
-    return names is None or dotnet_ordinal_ignore_case_key(net.name) not in names
+    return names is None or altium_name_key(net.name) not in names
 
 
 def _find_physical_net_with_sheet_entry(
@@ -11069,22 +11368,19 @@ def _find_physical_net_with_sheet_entry(
 ) -> AltiumCompiledNet | None:
     if not entry_name:
         return None
-    clean_entry_uid = dotnet_ordinal_ignore_case_key(str(entry_uid or ""))
+    clean_entry_uid = altium_name_key(str(entry_uid or ""))
     if clean_entry_uid:
-        clean_symbol_uid = dotnet_ordinal_ignore_case_key(str(sheet_symbol_uid or ""))
+        clean_symbol_uid = altium_name_key(str(sheet_symbol_uid or ""))
         expected_prefix = f"{clean_symbol_uid}_" if clean_symbol_uid else ""
         for net in physical_nets:
             if physical_document_id not in net.physical_document_ids:
                 continue
             if any(
                 endpoint.role.lower() == "sheet_entry"
-                and dotnet_ordinal_ignore_case_key(endpoint.object_id)
-                == clean_entry_uid
+                and altium_name_key(endpoint.object_id) == clean_entry_uid
                 and (
                     not expected_prefix
-                    or dotnet_ordinal_ignore_case_key(endpoint.element_id).startswith(
-                        expected_prefix
-                    )
+                    or altium_name_key(endpoint.element_id).startswith(expected_prefix)
                 )
                 for endpoint in net.endpoints
             ):
@@ -11114,17 +11410,15 @@ def _compiled_net_has_symbol_scoped_sheet_entry(
     sheet_symbol_uid: str,
     entry_name: str,
 ) -> bool:
-    clean_symbol_uid = dotnet_ordinal_ignore_case_key(str(sheet_symbol_uid or ""))
-    clean_entry_name = dotnet_ordinal_ignore_case_key(str(entry_name or ""))
+    clean_symbol_uid = altium_name_key(str(sheet_symbol_uid or ""))
+    clean_entry_name = altium_name_key(str(entry_name or ""))
     if not clean_symbol_uid or not clean_entry_name:
         return False
     expected_prefix = f"{clean_symbol_uid}_"
     return any(
         endpoint.role.lower() == "sheet_entry"
-        and dotnet_ordinal_ignore_case_key(endpoint.element_id).startswith(
-            expected_prefix
-        )
-        and dotnet_ordinal_ignore_case_key(endpoint.name) == clean_entry_name
+        and altium_name_key(endpoint.element_id).startswith(expected_prefix)
+        and altium_name_key(endpoint.name) == clean_entry_name
         for endpoint in net.endpoints
     )
 
@@ -11135,7 +11429,7 @@ def _find_physical_net_with_any_sheet_entry_name(
     physical_document_id: str,
     entry_name: str,
 ) -> AltiumCompiledNet | None:
-    clean_entry_name = dotnet_ordinal_ignore_case_key(str(entry_name or ""))
+    clean_entry_name = altium_name_key(str(entry_name or ""))
     if not clean_entry_name:
         return None
     for net in physical_nets:
@@ -11143,7 +11437,7 @@ def _find_physical_net_with_any_sheet_entry_name(
             continue
         if any(
             endpoint.role.lower() == "sheet_entry"
-            and dotnet_ordinal_ignore_case_key(endpoint.name) == clean_entry_name
+            and altium_name_key(endpoint.name) == clean_entry_name
             for endpoint in net.endpoints
         ):
             return net
@@ -11171,12 +11465,11 @@ def _find_physical_net_with_port(
 
 
 def _compiled_net_has_port_name(net: AltiumCompiledNet, port_name: str) -> bool:
-    clean_port_name = dotnet_ordinal_ignore_case_key(str(port_name or ""))
+    clean_port_name = altium_name_key(str(port_name or ""))
     if not clean_port_name:
         return False
     return any(
-        endpoint.role == "port"
-        and dotnet_ordinal_ignore_case_key(endpoint.name) == clean_port_name
+        endpoint.role == "port" and altium_name_key(endpoint.name) == clean_port_name
         for endpoint in net.endpoints
     )
 
@@ -11321,7 +11614,7 @@ def _hierarchy_endpoint_object_ids(
     name: str,
     source_occurrence_id: str = "",
 ) -> tuple[str, ...]:
-    name_key = dotnet_ordinal_ignore_case_key(name)
+    name_key = altium_name_key(name)
     values: list[str] = []
     for endpoint in net.endpoints:
         if not _hierarchy_endpoint_matches(
@@ -11351,7 +11644,7 @@ def _hierarchy_endpoint_matches(
     if not name_key:
         return True
     return (
-        dotnet_ordinal_ignore_case_key(endpoint.name) == name_key
+        altium_name_key(endpoint.name) == name_key
         or endpoint.role == "port"
         and _managed_port_collector_matches(endpoint.name, name)
     )
@@ -11409,7 +11702,7 @@ def _group_active_inter_sheet_ports(
             or harness_type
         ):
             continue
-        grouped[dotnet_ordinal_ignore_case_key(port.name)].append(
+        grouped[altium_name_key(port.name)].append(
             _InterSheetPortOccurrence(
                 name=str(port.name),
                 unique_id=str(getattr(port, "unique_id", "") or ""),
@@ -11468,7 +11761,7 @@ def _append_harness_inter_sheet_links(
     )
     if interface is None:
         return
-    definition = definitions.get(dotnet_ordinal_ignore_case_key(interface.type_name))
+    definition = definitions.get(altium_name_key(interface.type_name))
     if definition is None:
         _append_fallback_harness_inter_sheet_links(
             link_nets,
@@ -11567,11 +11860,11 @@ def _fallback_child_harness_members(
 ) -> tuple[tuple[_TypedHarnessInterface, ResolvedHarnessMember], ...]:
     result: list[tuple[_TypedHarnessInterface, ResolvedHarnessMember]] = []
     emitted: set[tuple[object, ...]] = set()
-    parent_name_key = dotnet_ordinal_ignore_case_key(child_port_name)
+    parent_name_key = altium_name_key(child_port_name)
     for interface in _typed_harness_interfaces(child_schdoc, child_inferred_port_types):
         if interface.role != "port":
             continue
-        if dotnet_ordinal_ignore_case_key(interface.name) != parent_name_key:
+        if altium_name_key(interface.name) != parent_name_key:
             continue
         definition = _definition_for_typed_harness_interface(
             interface, definitions, child_local_definitions
@@ -11641,14 +11934,14 @@ def _matching_child_typed_harness_interfaces(
     port_name: str,
     type_name: str,
 ) -> tuple[_TypedHarnessInterface, ...]:
-    port_key = dotnet_ordinal_ignore_case_key(port_name)
-    type_key = dotnet_ordinal_ignore_case_key(type_name)
+    port_key = altium_name_key(port_name)
+    type_key = altium_name_key(type_name)
     return tuple(
         interface
         for interface in interfaces
         if interface.role == "port"
-        and dotnet_ordinal_ignore_case_key(interface.name) == port_key
-        and dotnet_ordinal_ignore_case_key(interface.type_name) == type_key
+        and altium_name_key(interface.name) == port_key
+        and altium_name_key(interface.type_name) == type_key
     )
 
 
@@ -11911,15 +12204,11 @@ def _append_regular_inter_sheet_link(
             entry_uid=entry_uid,
             entry_occurrence_id=entry_occurrence_id,
             bus_members=bus_members,
-            child_ports=child_ports_by_name.get(
-                dotnet_ordinal_ignore_case_key(entry_name), ()
-            ),
+            child_ports=child_ports_by_name.get(altium_name_key(entry_name), ()),
         )
         return
 
-    child_ports = child_ports_by_name.get(
-        dotnet_ordinal_ignore_case_key(match_name), ()
-    )
+    child_ports = child_ports_by_name.get(altium_name_key(match_name), ())
     if not child_ports:
         stats["unmatched_candidate_count"] += 1
         return
@@ -11969,9 +12258,9 @@ def _bus_member_endpoint_matches_entry(
     entry_occurrence_id: str,
     bus_signal_index: int,
 ) -> bool:
-    if endpoint.role != "bus_member" or dotnet_ordinal_ignore_case_key(
+    if endpoint.role != "bus_member" or altium_name_key(
         endpoint.name
-    ) != dotnet_ordinal_ignore_case_key(entry_name):
+    ) != altium_name_key(entry_name):
         return False
     if not entry_occurrence_id:
         return False
@@ -11980,9 +12269,7 @@ def _bus_member_endpoint_matches_entry(
     if endpoint._bus_signal_index != bus_signal_index:
         return False
     if entry_uid:
-        return dotnet_ordinal_ignore_case_key(
-            endpoint.object_id
-        ) == dotnet_ordinal_ignore_case_key(entry_uid)
+        return altium_name_key(endpoint.object_id) == altium_name_key(entry_uid)
     return True
 
 
@@ -11995,8 +12282,7 @@ def _bus_member_endpoint_matches_port(
 ) -> bool:
     if (
         endpoint.role != "bus_member"
-        or dotnet_ordinal_ignore_case_key(endpoint.name)
-        != dotnet_ordinal_ignore_case_key(port_name)
+        or altium_name_key(endpoint.name) != altium_name_key(port_name)
         or endpoint._bus_signal_index != bus_signal_index
     ):
         return False
@@ -12077,8 +12363,8 @@ def _project_bus_member_net_label_endpoints(
 ) -> tuple[AltiumCompiledNetEndpoint, ...]:
     existing = {
         (
-            dotnet_ordinal_ignore_case_key(endpoint.object_id),
-            dotnet_ordinal_ignore_case_key(endpoint.name),
+            altium_name_key(endpoint.object_id),
+            altium_name_key(endpoint.name),
         )
         for endpoint in net.endpoints
         if endpoint.role == "net_label"
@@ -12087,8 +12373,8 @@ def _project_bus_member_net_label_endpoints(
         replace(endpoint, id=f"{endpoint.id}:source:net_label", role="net_label")
         for endpoint in source_endpoints
         if (
-            dotnet_ordinal_ignore_case_key(endpoint.object_id),
-            dotnet_ordinal_ignore_case_key(endpoint.name),
+            altium_name_key(endpoint.object_id),
+            altium_name_key(endpoint.name),
         )
         not in existing
     )
@@ -12106,8 +12392,7 @@ def _bus_member_endpoint_is_label_source(
         and endpoint._source_occurrence_id != port_occurrence_id
         and not endpoint._source_occurrence_id.startswith("port:")
         and endpoint._bus_signal_index == bus_signal_index
-        and dotnet_ordinal_ignore_case_key(endpoint.name)
-        == dotnet_ordinal_ignore_case_key(port_name)
+        and altium_name_key(endpoint.name) == altium_name_key(port_name)
     )
 
 
@@ -12238,8 +12523,8 @@ def _repeat_structural_parent_net(
     inner_port: str,
     resolved_name: str,
 ) -> AltiumCompiledNet | None:
-    inner_key = dotnet_ordinal_ignore_case_key(inner_port)
-    resolved_key = dotnet_ordinal_ignore_case_key(resolved_name)
+    inner_key = altium_name_key(inner_port)
+    resolved_key = altium_name_key(resolved_name)
     member_index = _repeat_structural_member_index(inner_port, resolved_name)
     if member_index is None:
         return None
@@ -12277,9 +12562,7 @@ def _is_repeat_structural_parent_candidate(
     if not _compiled_net_is_scalar_inter_sheet_candidate(net):
         return False
     net_names = (net.name, *_compiled_net_label_names(net))
-    if not any(
-        dotnet_ordinal_ignore_case_key(name) == resolved_key for name in net_names
-    ):
+    if not any(altium_name_key(name) == resolved_key for name in net_names):
         return False
     return any(
         _endpoint_contains_repeat_structural_member(
@@ -12302,7 +12585,7 @@ def _endpoint_contains_repeat_structural_member(
     bus_range = _parse_managed_bus_range(endpoint.name)
     if bus_range is None:
         return False
-    if dotnet_ordinal_ignore_case_key(bus_range.prefix) != inner_key:
+    if altium_name_key(bus_range.prefix) != inner_key:
         return False
     return (
         min(bus_range.start, bus_range.end)
@@ -12561,8 +12844,8 @@ def _managed_interface_bus_parts(name: str) -> tuple[int, str, str] | None:
     separator = name.find("..", open_bracket + 1)
     if close_bracket < 0 or separator < 0 or separator >= close_bracket:
         return None
-    left = dotnet_trim(name[open_bracket + 1 : separator])
-    right = dotnet_trim(name[separator + 2 : close_bracket])
+    left = trim_altium_whitespace(name[open_bracket + 1 : separator])
+    right = trim_altium_whitespace(name[separator + 2 : close_bracket])
     if not left or not right:
         return None
     return open_bracket, left, right
@@ -12590,23 +12873,17 @@ def _managed_interface_bus_range(
 
 
 def _managed_port_collector_matches(port_name: str, entry_name: str) -> bool:
-    if dotnet_ordinal_ignore_case_key(port_name) == dotnet_ordinal_ignore_case_key(
-        entry_name
-    ):
+    if altium_name_key(port_name) == altium_name_key(entry_name):
         return True
     parsed = _managed_interface_bus_range(port_name)
     if parsed is None:
         return False
     prefix, start, end = parsed
     if start is None or end is None:
-        return dotnet_ordinal_ignore_case_key(prefix) == dotnet_ordinal_ignore_case_key(
-            entry_name
-        )
+        return altium_name_key(prefix) == altium_name_key(entry_name)
     candidate_prefix = entry_name[: len(prefix)]
     suffix = entry_name[len(prefix) :]
-    if dotnet_ordinal_ignore_case_key(prefix) != dotnet_ordinal_ignore_case_key(
-        candidate_prefix
-    ):
+    if altium_name_key(prefix) != altium_name_key(candidate_prefix):
         return False
     if not suffix.isascii() or not suffix.isdigit():
         return False
@@ -12676,9 +12953,7 @@ def _sorted_interface_entries(
         for entry in symbol_info.entries
     ]
     rows.sort(
-        key=lambda row: dotnet_ordinal_ignore_case_sort_key(
-            _inter_sheet_entry_display_name(row[1])
-        )
+        key=lambda row: altium_name_sort_key(_inter_sheet_entry_display_name(row[1]))
     )
     return rows
 
@@ -12745,9 +13020,9 @@ def _port_has_interface_entry_match(
     parent_symbols: tuple[AltiumCompiledSheetSymbol, ...],
     sheet_symbol_info_by_id: Mapping[str, "SchSheetSymbolInfo"],
 ) -> bool:
-    port_key = dotnet_ordinal_ignore_case_key(port.name)
+    port_key = altium_name_key(port.name)
     return any(
-        dotnet_ordinal_ignore_case_key(
+        altium_name_key(
             _interface_name(
                 _inter_sheet_entry_display_name(entry),
                 repeat_owner=symbol.is_repeat,
@@ -12770,7 +13045,7 @@ def _unmatched_port_diagnostics(
         for child_id, parent_symbols in parents_by_child.items()
         for port in active_ports.get(child_id, ())
     ]
-    rows.sort(key=lambda row: dotnet_ordinal_ignore_case_sort_key(row[2].name))
+    rows.sort(key=lambda row: altium_name_sort_key(row[2].name))
     diagnostics: list[AltiumCompileDiagnostic] = []
     for child_id, parent_symbols, port in rows:
         if _port_has_interface_entry_match(
@@ -13126,7 +13401,7 @@ def _dedupe_compiled_net_values(values: list[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(value for value in values if value))
 
 
-_compiled_case_insensitive_key = dotnet_ordinal_ignore_case_key
+_compiled_case_insensitive_key = altium_name_key
 
 
 class _CompiledSourceMergeOrder:
@@ -13258,10 +13533,10 @@ def _compiled_net_item_order_key(
     entry: _CompiledPortRelativeEntry,
 ) -> tuple[bytes, bytes, int, bytes]:
     return (
-        dotnet_ordinal_ignore_case_sort_key(entry.name),
-        dotnet_ordinal_ignore_case_sort_key(entry.parent_id),
+        altium_name_sort_key(entry.name),
+        altium_name_sort_key(entry.parent_id),
         entry.object_kind,
-        dotnet_ordinal_ignore_case_sort_key(entry.logical_designator),
+        altium_name_sort_key(entry.logical_designator),
     )
 
 
@@ -13533,8 +13808,7 @@ def _compiled_net_has_repeat_sheet_entry_for_base(
     base_name: str,
 ) -> bool:
     return any(
-        dotnet_ordinal_ignore_case_key(base)
-        == dotnet_ordinal_ignore_case_key(base_name)
+        altium_name_key(base) == altium_name_key(base_name)
         for base in _compiled_net_repeat_sheet_entry_bases(net)
     )
 
@@ -13544,8 +13818,7 @@ def _compiled_net_has_bus_range_label_for_base(
     base_name: str,
 ) -> bool:
     return any(
-        dotnet_ordinal_ignore_case_key(base)
-        == dotnet_ordinal_ignore_case_key(base_name)
+        altium_name_key(base) == altium_name_key(base_name)
         for base in _compiled_net_bus_range_label_bases(net)
     )
 
@@ -13569,12 +13842,10 @@ def _repeat_bus_structural_bases_by_physical_document_id(
     for net in physical_nets:
         for document_id in net.physical_document_ids:
             for base in _compiled_net_repeat_sheet_entry_bases(net):
-                repeat_bases_by_document_id[document_id].add(
-                    dotnet_ordinal_ignore_case_key(base)
-                )
+                repeat_bases_by_document_id[document_id].add(altium_name_key(base))
             for base in _compiled_net_bus_range_label_bases(net):
                 bus_bases_by_document_id[document_id].setdefault(
-                    dotnet_ordinal_ignore_case_key(base),
+                    altium_name_key(base),
                     base,
                 )
 
@@ -13602,13 +13873,13 @@ def _published_physical_nets(
         suppress = False
         if not net.terminals:
             label_names = {
-                dotnet_ordinal_ignore_case_key(endpoint.name)
+                altium_name_key(endpoint.name)
                 for endpoint in net.endpoints
                 if endpoint.role == "net_label"
             }
             for document_id in net.physical_document_ids:
                 for base in structural_bases.get(document_id, ()):
-                    if dotnet_ordinal_ignore_case_key(
+                    if altium_name_key(
                         base
                     ) in label_names and _compiled_net_has_repeat_sheet_entry_for_base(
                         net, base
@@ -13639,6 +13910,50 @@ def _compiled_global_signal_ids_by_source_pin(
             if terminal._source_pin_object_id:
                 result.setdefault(key, net.id)
     return result
+
+
+def _compiled_pin_evidence_occurrences(
+    source_occurrences: Sequence[tuple[str, str, int, str]],
+    component_pin_evidence: Mapping[
+        str,
+        Mapping[int, _CompiledComponentPinEvidence],
+    ],
+    physical_room_names_by_document_id: Mapping[str, str],
+) -> tuple[tuple[str, str, _CompiledComponentPinEvidence], ...]:
+    rows: list[tuple[str, str, _CompiledComponentPinEvidence, str]] = []
+    for (
+        physical_document_id,
+        logical_document_id,
+        source_index,
+        physical_part_designator,
+    ) in source_occurrences:
+        evidence = component_pin_evidence.get(logical_document_id, {}).get(source_index)
+        if evidence is None:
+            continue
+        rows.append(
+            (
+                physical_document_id,
+                physical_room_names_by_document_id.get(physical_document_id, ""),
+                evidence,
+                physical_part_designator,
+            )
+        )
+    if len(rows) == 1 and rows[0][2].subparts_count <= 1:
+        physical_document_id, physical_room_name, evidence, _designator = rows[0]
+        return ((physical_document_id, physical_room_name, evidence),)
+    return tuple(
+        (
+            physical_document_id,
+            physical_room_name,
+            replace(evidence, physical_part_designator=physical_part_designator),
+        )
+        for (
+            physical_document_id,
+            physical_room_name,
+            evidence,
+            physical_part_designator,
+        ) in rows
+    )
 
 
 def _compiled_component_pin_counts(
@@ -13680,27 +13995,10 @@ def _compiled_component_pin_counts(
     result: list[AltiumCompiledComponent] = []
     for component in components:
         physical_key = component.physical_designator.lower()
-        evidence_occurrences = tuple(
-            (
-                physical_document_id,
-                physical_room_names_by_document_id.get(physical_document_id, ""),
-                replace(
-                    evidence,
-                    physical_part_designator=physical_part_designator,
-                ),
-            )
-            for (
-                physical_document_id,
-                logical_document_id,
-                source_index,
-                physical_part_designator,
-            ) in (component._managed_source_component_occurrences)
-            if (
-                evidence := component_pin_evidence.get(logical_document_id, {}).get(
-                    source_index
-                )
-            )
-            is not None
+        evidence_occurrences = _compiled_pin_evidence_occurrences(
+            component._managed_source_component_occurrences,
+            component_pin_evidence,
+            physical_room_names_by_document_id,
         )
         if evidence_occurrences:
             pin_count = _compiled_managed_pin_count(
@@ -13777,22 +14075,19 @@ def _compiled_source_net_order_key(
         canonical_rank = (
             0
             if canonical_power_key is not None
-            and dotnet_ordinal_ignore_case_key(primary_power_name)
-            == canonical_power_key
+            and altium_name_key(primary_power_name) == canonical_power_key
             else 1
         )
         return (
             0,
             canonical_rank,
             source_order[net.id],
-            dotnet_ordinal_ignore_case_sort_key(primary_power_name),
+            altium_name_sort_key(primary_power_name),
         )
 
     port_names = _compiled_net_port_names(net)
     if port_names:
-        port_key = dotnet_ordinal_ignore_case_sort_key(
-            min(port_names, key=dotnet_ordinal_ignore_case_sort_key)
-        )
+        port_key = altium_name_sort_key(min(port_names, key=altium_name_sort_key))
         return (1, 0, port_key, source_order[net.id])
 
     return (2, 0, b"", source_order[net.id])
@@ -13827,15 +14122,15 @@ def _compiled_ordered_source_nets(
     }
     canonical_power_key = None
     if label_backed_power_names:
-        canonical_power_key = dotnet_ordinal_ignore_case_key(
+        canonical_power_key = altium_name_key(
             min(
                 label_backed_power_names,
-                key=dotnet_ordinal_ignore_case_sort_key,
+                key=altium_name_sort_key,
             )
         )
     elif primary_power_names:
-        canonical_power_key = dotnet_ordinal_ignore_case_key(
-            min(primary_power_names, key=dotnet_ordinal_ignore_case_sort_key)
+        canonical_power_key = altium_name_key(
+            min(primary_power_names, key=altium_name_sort_key)
         )
     return sorted(
         group,
@@ -13932,15 +14227,15 @@ def _finalize_compiled_flat_name(
     annotation: AnnotationFile,
     auto_named: bool,
 ) -> tuple[str, str, str | None, bool]:
-    selected_key = dotnet_ordinal_ignore_case_key(selected_name)
+    selected_key = altium_name_key(selected_name)
     preapplied = next(
         (
             net
             for net in group
             if net.override_name is not None
             and net.original_name is not None
-            and dotnet_ordinal_ignore_case_key(net.name) == selected_key
-            and dotnet_ordinal_ignore_case_key(net.override_name) == selected_key
+            and altium_name_key(net.name) == selected_key
+            and altium_name_key(net.override_name) == selected_key
         ),
         None,
     )
@@ -14376,9 +14671,9 @@ def _compiled_net_name_comparison(
     current_full_name: str | None = None,
     compile_options: AltiumProjectCompileOptions,
 ) -> int:
-    if not dotnet_trim(candidate_name):
+    if not trim_altium_whitespace(candidate_name):
         return 1
-    if not dotnet_trim(current_name):
+    if not trim_altium_whitespace(current_name):
         return -1
     comparison = _compiled_descending_priority_comparison(
         candidate._name_source_priority,
@@ -14414,11 +14709,11 @@ def _compiled_descending_priority_comparison(candidate: int, current: int) -> in
 
 
 def _compiled_managed_source_name_comparison(candidate: str, current: str) -> int:
-    comparison = managed_alpha_numeric_compare(candidate, current)
+    comparison = altium_alpha_numeric_compare(candidate, current)
     if comparison:
         return comparison
-    candidate_units = dotnet_utf16_units(candidate)
-    current_units = dotnet_utf16_units(current)
+    candidate_units = utf16_code_units(candidate)
+    current_units = utf16_code_units(current)
     return (current_units > candidate_units) - (current_units < candidate_units)
 
 
@@ -14455,7 +14750,7 @@ def _compiled_full_name_comparison(
     candidate_full_name = _compiled_source_full_name(candidate, candidate_full_name)
     current_full_name = _compiled_source_full_name(current, current_full_name)
     if compile_options.channel_room_naming_style in {0, 1}:
-        return managed_alpha_numeric_compare(candidate_full_name, current_full_name)
+        return altium_alpha_numeric_compare(candidate_full_name, current_full_name)
     if (
         candidate._name_source_relative_multichannel_depth
         != current._name_source_relative_multichannel_depth
@@ -14466,7 +14761,7 @@ def _compiled_full_name_comparison(
             < current._name_source_relative_multichannel_depth
             else 1
         )
-    return managed_alpha_numeric_compare(candidate_full_name, current_full_name)
+    return altium_alpha_numeric_compare(candidate_full_name, current_full_name)
 
 
 def _compiled_bus_prefix(net: AltiumCompiledNet) -> str:
@@ -14528,7 +14823,7 @@ def _compiled_flat_name_candidate(
         if not candidate._name_source_kind:
             continue
         comparison_name = candidate._name_source_raw_name or candidate.name
-        if not dotnet_trim(comparison_name):
+        if not trim_altium_whitespace(comparison_name):
             continue
         if selected is None or _compiled_name_candidate_wins(
             candidate,
@@ -15274,7 +15569,7 @@ def _compiled_flat_row_source_parts(
             [terminal for net in ordered_group for terminal in net.terminals]
         )
     )
-    _compiled_dotnet_sort(terminals, _compiled_terminal_compare)
+    _compiled_altium_compat_unstable_sort(terminals, _compiled_terminal_compare)
     ordered_terminals = tuple(terminals)
     terminal_ids = _dedupe_compiled_net_values(
         [terminal.id for terminal in ordered_terminals]
@@ -15333,10 +15628,10 @@ def _compiled_terminal_compare(
     left: AltiumCompiledNetTerminal,
     right: AltiumCompiledNetTerminal,
 ) -> int:
-    comparison = managed_alpha_numeric_compare(left.designator, right.designator)
+    comparison = altium_alpha_numeric_compare(left.designator, right.designator)
     if comparison:
         return comparison
-    return managed_alpha_numeric_compare(left.pin, right.pin)
+    return altium_alpha_numeric_compare(left.pin, right.pin)
 
 
 def _compiled_flat_item_category(item: AltiumCompiledNetItem) -> int:
@@ -15631,17 +15926,17 @@ def _sheet_entry_interface_key_from_item(
     if not physical_document_id or not entry_name:
         return None
     suffix = f"_{entry_name}"
-    suffix_key = dotnet_ordinal_ignore_case_key(suffix)
+    suffix_key = altium_name_key(suffix)
     for identity_name in ("element_id", "object_id"):
         identity = str(getattr(item, identity_name, "") or "")
-        if not dotnet_ordinal_ignore_case_key(identity).endswith(suffix_key):
+        if not altium_name_key(identity).endswith(suffix_key):
             continue
         sheet_symbol_uid = identity[: -len(suffix)]
         if sheet_symbol_uid:
             return (
                 physical_document_id,
-                dotnet_ordinal_ignore_case_key(sheet_symbol_uid),
-                dotnet_ordinal_ignore_case_key(entry_name),
+                altium_name_key(sheet_symbol_uid),
+                altium_name_key(entry_name),
             )
     return None
 
@@ -15674,7 +15969,7 @@ def _represented_terminal_child_ports(
                 keys.add(
                     (
                         physical_document_id,
-                        dotnet_ordinal_ignore_case_key(port_name),
+                        altium_name_key(port_name),
                     )
                 )
     return keys
@@ -15693,7 +15988,7 @@ def _coalesce_terminal_less_bus_label_rows(
             and endpoint_roles
             and endpoint_roles <= {"net_label"}
         ):
-            key = dotnet_ordinal_ignore_case_key(net.name)
+            key = altium_name_key(net.name)
             existing_index = index_by_name.get(key)
             if existing_index is not None:
                 existing = result[existing_index]
@@ -15748,7 +16043,7 @@ def _missing_terminal_less_label_source_nets(
     }
     represented_zero_keys = {
         (
-            dotnet_ordinal_ignore_case_key(flat_net.name),
+            altium_name_key(flat_net.name),
             tuple(flat_net.physical_document_ids),
         )
         for flat_net in flat_rows
@@ -15768,7 +16063,7 @@ def _missing_terminal_less_label_source_nets(
         if not endpoint_roles or not endpoint_roles <= {"net_label", "harness_entry"}:
             continue
         key = (
-            dotnet_ordinal_ignore_case_key(physical_net.name),
+            altium_name_key(physical_net.name),
             tuple(physical_net.physical_document_ids),
         )
         if key in represented_zero_keys:
@@ -15883,9 +16178,7 @@ def _missing_physical_sheet_symbol_interface_nets(
             )
     rows: list[AltiumCompiledNet] = []
     emitted_bus_range_names: set[str] = {
-        dotnet_ordinal_ignore_case_key(net.name)
-        for net in flat_rows
-        if _parse_bus_range(net.name)
+        altium_name_key(net.name) for net in flat_rows if _parse_bus_range(net.name)
     }
     for physical_symbol in physical_sheet_symbols:
         symbol_info = sheet_symbol_info_by_id.get(
@@ -15903,8 +16196,8 @@ def _missing_physical_sheet_symbol_interface_nets(
                 continue
             key = (
                 physical_symbol.owner_physical_document_id,
-                dotnet_ordinal_ignore_case_key(physical_symbol.source_object_id),
-                dotnet_ordinal_ignore_case_key(entry_name),
+                altium_name_key(physical_symbol.source_object_id),
+                altium_name_key(entry_name),
             )
             if key in represented_keys:
                 continue
@@ -15914,7 +16207,7 @@ def _missing_physical_sheet_symbol_interface_nets(
                 inner_port is None
                 and (
                     physical_symbol.child_physical_document_id,
-                    dotnet_ordinal_ignore_case_key(match_name),
+                    altium_name_key(match_name),
                 )
                 in represented_terminal_child_ports
             ):
@@ -15943,7 +16236,7 @@ def _missing_physical_sheet_symbol_interface_nets(
                     physical_nets,
                 )
             if _parse_bus_range(name):
-                name_key = dotnet_ordinal_ignore_case_key(name)
+                name_key = altium_name_key(name)
                 if name_key in emitted_bus_range_names:
                     represented_keys.add(key)
                     continue
@@ -16048,13 +16341,23 @@ def _device_sheet_numbering_inputs(
     )
 
 
+def _compile_source_documents(
+    design: "AltiumDesign",
+    supplied: Sequence["AltiumSchDoc"] | None,
+) -> list[AltiumSchDoc]:
+    if supplied is not None:
+        return list(supplied)
+    return [_compiler_document_source(schdoc) for schdoc in design.schdocs]
+
+
 def compile_design(
     design: "AltiumDesign",
     *,
     allow_device_sheet_editing: bool = False,
+    source_documents: Sequence["AltiumSchDoc"] | None = None,
 ) -> AltiumCompiledDesign:
     """Compile a project design into its resolved schematic model."""
-    sources = [_compiler_document_source(schdoc) for schdoc in design.schdocs]
+    sources = _compile_source_documents(design, source_documents)
     project = design.project
     project_base_dir = project.filepath.parent if project and project.filepath else None
     options = design._options or NetlistOptions()

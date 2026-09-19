@@ -26,7 +26,7 @@ from .altium_record_types import (
     color_to_hex,
     rgb_to_win32_color,
 )
-from .altium_dotnet_ordinal import dotnet_ordinal_ignore_case_key, dotnet_trim
+from .altium_text_semantics import altium_name_key, trim_altium_whitespace
 from ._sch_managed_defaults import TEXT_COLOR
 from .altium_sch_binding import SingleFontBindableRecordMixin
 from .altium_serializer import (
@@ -585,7 +585,7 @@ class AltiumSchParameter(SingleFontBindableRecordMixin, SchPrimitive):
             serializer.remove_field(record, Fields.IS_IMAGE_PARAMETER)
 
     def _display_text(self, ctx: SchSvgRenderContext) -> str:
-        from .altium_dotnet_ordinal import dotnet_ordinal_ignore_case_key
+        from .altium_text_semantics import altium_name_key
 
         override = ctx._parameter_render_overrides.get(id(self))
         if override is not None:
@@ -594,7 +594,7 @@ class AltiumSchParameter(SingleFontBindableRecordMixin, SchPrimitive):
                 if override.apply_show_name and self.show_name
                 else override.text
             )
-        if dotnet_ordinal_ignore_case_key(self.name) == "RULE":
+        if altium_name_key(self.name) == "RULE":
             return self.description
         text = ctx.substitute_parameters(self.text)
         return f"{self.name}: {text}" if self.show_name else text
@@ -784,9 +784,9 @@ def _physical_model_state(text: str) -> dict[str, str]:
     values: dict[str, str] = {}
     for token in text.split("|"):
         name, separator, value = token.partition("=")
-        normalized_name = dotnet_ordinal_ignore_case_key(dotnet_trim(name))
+        normalized_name = altium_name_key(trim_altium_whitespace(name))
         if separator and normalized_name and normalized_name not in values:
-            values[normalized_name] = dotnet_trim(value)
+            values[normalized_name] = trim_altium_whitespace(value)
     return values
 
 
@@ -811,15 +811,15 @@ _PHYSICAL_MODEL_ROTATIONS = ("eRotate0", "eRotate90", "eRotate180", "eRotate270"
 _PHYSICAL_MODEL_CAVITY_VIEWS = ("eConnectivity", "ePinNumbers")
 _EMPTY_GUID = "00000000-0000-0000-0000-000000000000"
 _FIFTY_MM_INTERNAL = 19_685_039
-_DOTNET_INTEGER_RE = re.compile(r"[+-]?[0-9]+", re.ASCII)
-_DOTNET_GUID_D_RE = re.compile(
+_ALTIUM_INTEGER_RE = re.compile(r"[+-]?[0-9]+", re.ASCII)
+_ALTIUM_GUID_D_RE = re.compile(
     r"(?P<a>[0-9a-fA-F]{8})-(?P<b>[0-9a-fA-F]{4})-"
     r"(?P<c>[0-9a-fA-F]{4})-(?P<d>[0-9a-fA-F]{4})-"
     r"(?P<e>[0-9a-fA-F]{12})",
     re.ASCII,
 )
-_DOTNET_GUID_N_RE = re.compile(r"[0-9a-fA-F]{32}", re.ASCII)
-_DOTNET_GUID_X_RE = re.compile(
+_ALTIUM_GUID_N_RE = re.compile(r"[0-9a-fA-F]{32}", re.ASCII)
+_ALTIUM_GUID_X_RE = re.compile(
     r"\{\s*0[xX](?P<a>[0-9a-fA-F]{1,8})\s*,\s*"
     r"0[xX](?P<b>[0-9a-fA-F]{1,4})\s*,\s*"
     r"0[xX](?P<c>[0-9a-fA-F]{1,4})\s*,\s*\{\s*"
@@ -851,11 +851,11 @@ def _physical_model_float_text(value: float) -> str:
 
 
 def _physical_model_value(values: dict[str, str], name: str) -> str | None:
-    return values.get(dotnet_ordinal_ignore_case_key(name))
+    return values.get(altium_name_key(name))
 
 
-def _parse_dotnet_integer(value: str | None) -> int | None:
-    if value is None or _DOTNET_INTEGER_RE.fullmatch(value) is None:
+def _parse_altium_integer(value: str | None) -> int | None:
+    if value is None or _ALTIUM_INTEGER_RE.fullmatch(value) is None:
         return None
     return int(value, 10)
 
@@ -867,9 +867,9 @@ def _strip_invariant_currency(value: str) -> str | None:
     if value.count(currency) != 1:
         return None
     before, after = value.split(currency)
-    if not dotnet_trim(before):
+    if not trim_altium_whitespace(before):
         return _compact_currency_prefix(after)
-    if not dotnet_trim(after):
+    if not trim_altium_whitespace(after):
         return _compact_currency_suffix(before)
     return _strip_internal_invariant_currency(before, after)
 
@@ -878,9 +878,9 @@ def _strip_internal_invariant_currency(before: str, after: str) -> str | None:
     if before in {"+", "-"}:
         suffix = _compact_currency_prefix(after)
         return None if suffix is None else f"{before}{suffix}"
-    trailing = dotnet_trim(after)
+    trailing = trim_altium_whitespace(after)
     if trailing in {"+", "-"}:
-        return f"{dotnet_trim(before)}{trailing}"
+        return f"{trim_altium_whitespace(before)}{trailing}"
     return _compact_internal_currency_parentheses(before, after)
 
 
@@ -891,7 +891,7 @@ def _compact_internal_currency_parentheses(
     if before == "(" and after.endswith(")"):
         compact = _compact_currency_prefix(after[:-1])
         return None if compact is None else f"({compact})"
-    if dotnet_trim(after) == ")" and before.startswith("("):
+    if trim_altium_whitespace(after) == ")" and before.startswith("("):
         compact = _compact_currency_suffix(before[1:])
         return None if compact is None else f"({compact})"
     return None
@@ -917,19 +917,19 @@ def _compact_currency_suffix(value: str) -> str | None:
     return _compact_currency_prefix(value)
 
 
-def _parse_dotnet_enum_names(value: str, members: tuple[str, ...]) -> int | None:
+def _parse_altium_enum_names(value: str, members: tuple[str, ...]) -> int | None:
     numeric = 0
     for token in value.split(","):
-        name = dotnet_trim(token)
+        name = trim_altium_whitespace(token)
         if name not in members:
             return None
         numeric |= members.index(name)
     return numeric
 
 
-def _strip_dotnet_parentheses(value: str) -> tuple[str, bool] | None:
+def _strip_altium_float_parentheses(value: str) -> tuple[str, bool] | None:
     parenthesized = value.startswith("(") and value.endswith(")")
-    normalized = dotnet_trim(value[1:-1]) if parenthesized else value
+    normalized = trim_altium_whitespace(value[1:-1]) if parenthesized else value
     if "(" in normalized or ")" in normalized:
         return None
     if any(char.isspace() for char in normalized):
@@ -937,7 +937,7 @@ def _strip_dotnet_parentheses(value: str) -> tuple[str, bool] | None:
     return normalized, parenthesized
 
 
-def _strip_dotnet_double_sign(
+def _strip_altium_float_sign(
     value: str,
     *,
     parenthesized: bool,
@@ -957,18 +957,18 @@ def _strip_dotnet_double_sign(
     return normalized, negative
 
 
-def _normalize_dotnet_double_sign(value: str) -> tuple[str, bool] | None:
+def _normalize_altium_float_sign(value: str) -> tuple[str, bool] | None:
     normalized = _strip_invariant_currency(value)
     if normalized is None:
         return None
-    unwrapped = _strip_dotnet_parentheses(normalized)
+    unwrapped = _strip_altium_float_parentheses(normalized)
     if unwrapped is None:
         return None
     normalized, parenthesized = unwrapped
-    return _strip_dotnet_double_sign(normalized, parenthesized=parenthesized)
+    return _strip_altium_float_sign(normalized, parenthesized=parenthesized)
 
 
-def _normalize_dotnet_double_number(value: str) -> str | None:
+def _normalize_altium_float_number(value: str) -> str | None:
     exponent_parts = re.split(r"[eE]", value)
     if len(exponent_parts) > 2:
         return None
@@ -982,43 +982,43 @@ def _normalize_dotnet_double_number(value: str) -> str | None:
         return None
     exponent = ""
     if len(exponent_parts) == 2:
-        if _DOTNET_INTEGER_RE.fullmatch(exponent_parts[1]) is None:
+        if _ALTIUM_INTEGER_RE.fullmatch(exponent_parts[1]) is None:
             return None
         exponent = f"e{exponent_parts[1]}"
     return f"{mantissa}{exponent}"
 
 
-def _parse_dotnet_invariant_double(value: str | None) -> float | None:
+def _parse_altium_invariant_float(value: str | None) -> float | None:
     special_values = {"NaN": math.nan, "Infinity": math.inf, "-Infinity": -math.inf}
     if value in special_values:
         return special_values[value]
     if value is None:
         return None
-    signed = _normalize_dotnet_double_sign(value)
+    signed = _normalize_altium_float_sign(value)
     if signed is None:
         return None
     unsigned_value, negative = signed
-    number = _normalize_dotnet_double_number(unsigned_value)
+    number = _normalize_altium_float_number(unsigned_value)
     if number is None:
         return None
     return float(f"{'-' if negative else ''}{number}")
 
 
-def _parse_dotnet_guid(value: str | None) -> str | None:
+def _parse_altium_guid(value: str | None) -> str | None:
     if value is None:
         return None
-    match = _DOTNET_GUID_D_RE.fullmatch(value)
+    match = _ALTIUM_GUID_D_RE.fullmatch(value)
     if (
         match is None
         and len(value) >= 2
         and ((value[0], value[-1]) in {("{", "}"), ("(", ")")})
     ):
-        match = _DOTNET_GUID_D_RE.fullmatch(value[1:-1])
+        match = _ALTIUM_GUID_D_RE.fullmatch(value[1:-1])
     if match is not None:
         return str(uuid.UUID("".join(match.group(name) for name in "abcde")))
-    if _DOTNET_GUID_N_RE.fullmatch(value) is not None:
+    if _ALTIUM_GUID_N_RE.fullmatch(value) is not None:
         return str(uuid.UUID(value))
-    match = _DOTNET_GUID_X_RE.fullmatch(value)
+    match = _ALTIUM_GUID_X_RE.fullmatch(value)
     if match is None:
         return None
     compact = "".join(
@@ -1143,9 +1143,7 @@ class AltiumSchImageParameter(AltiumSchParameter):
 
     @staticmethod
     def _state_bool(values: dict[str, str], name: str, default: bool) -> bool:
-        value = dotnet_ordinal_ignore_case_key(
-            _physical_model_value(values, name) or ""
-        )
+        value = altium_name_key(_physical_model_value(values, name) or "")
         if value == "TRUE":
             return True
         if value == "FALSE":
@@ -1154,7 +1152,7 @@ class AltiumSchImageParameter(AltiumSchParameter):
 
     @staticmethod
     def _state_int(values: dict[str, str], name: str, default: int) -> int:
-        value = _parse_dotnet_integer(_physical_model_value(values, name))
+        value = _parse_altium_integer(_physical_model_value(values, name))
         if value is None:
             return default
         return value if -(1 << 31) <= value <= (1 << 31) - 1 else default
@@ -1172,10 +1170,10 @@ class AltiumSchImageParameter(AltiumSchParameter):
         if value in members:
             return value
         if value is not None and "," in value:
-            combined = _parse_dotnet_enum_names(value, members)
+            combined = _parse_altium_enum_names(value, members)
             if combined is not None:
                 return members[combined] if combined < len(members) else str(combined)
-        numeric = _parse_dotnet_integer(value)
+        numeric = _parse_altium_integer(value)
         if numeric is None:
             return default
         minimum, maximum = (0, 255) if byte else (-(1 << 31), (1 << 31) - 1)
@@ -1185,11 +1183,11 @@ class AltiumSchImageParameter(AltiumSchParameter):
 
     @staticmethod
     def _state_guid(values: dict[str, str], name: str, default: str) -> str:
-        return _parse_dotnet_guid(_physical_model_value(values, name)) or default
+        return _parse_altium_guid(_physical_model_value(values, name)) or default
 
     @staticmethod
     def _state_float(values: dict[str, str], name: str, default: float) -> float:
-        value = _parse_dotnet_invariant_double(_physical_model_value(values, name))
+        value = _parse_altium_invariant_float(_physical_model_value(values, name))
         return default if value is None else value
 
     def serialize_to_record(self) -> _RecordFields:

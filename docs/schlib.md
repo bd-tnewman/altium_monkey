@@ -22,6 +22,14 @@ read-only live views. Use `AltiumSchLib.add_symbol()` / `remove_symbol()` and
 `AltiumSymbol.add_object()` / `remove_object()` for structural changes instead
 of appending to or replacing a returned view.
 
+Rename a library-owned symbol with
+`schlib.rename_symbol(symbol_or_storage_name, storage_name,
+original_name=None)`. String selection is exact and case-sensitive and uses
+the current OLE storage key, not the semantic library reference. Omitting
+`original_name` preserves that semantic reference. The operation validates and
+serializes a candidate before changing live state, moves the complete symbol
+storage subtree, and returns the same owned symbol object.
+
 Add symbol records with `symbol.add_object(...)` or symbol helper methods. Keep
 visual ordering in mind: body graphics should usually be behind pins and text.
 That order is preserved when a symbol is inserted into a SchDoc through

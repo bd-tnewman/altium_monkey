@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from .altium_dotnet_ordinal import dotnet_ordinal_ignore_case_key
+from .altium_text_semantics import altium_name_key
 from .altium_record_types import SchRecordType
 
 if TYPE_CHECKING:
@@ -118,7 +118,7 @@ def _alternate_parameter_names(
         if len(name) > remaining:
             raise ValueError("component variant parameter character limit exceeded")
         remaining -= len(name)
-        names.add(dotnet_ordinal_ignore_case_key(name))
+        names.add(altium_name_key(name))
     return names
 
 
@@ -141,7 +141,7 @@ def _original_variant_children(
         (kind, child)
         for kind, child in children
         if getattr(child, "record_type", None) != SchRecordType.PARAMETER
-        or dotnet_ordinal_ignore_case_key(str(getattr(child, "name", ""))) in names
+        or altium_name_key(str(getattr(child, "name", ""))) in names
     ]
 
 

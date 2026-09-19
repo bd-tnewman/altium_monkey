@@ -23,7 +23,20 @@ Use it when you need to:
 `altium_monkey.schematic_bom.a0` through an immutable
 `SchematicBomPayload`. Use its `to_json()`, `to_json_text()`, or
 `to_json_bytes()` methods for a versioned transport. The established
-list-returning `to_bom()` API remains available.
+list-returning `to_bom()` API remains available. Its default remains a logical
+compiled-schematic BOM, but it now projects directly from the compiled design
+without constructing an intermediate netlist.
+
+Use `to_bom(use_pcb_data=True)` for a faster no-compile view of physical parts
+placed on the board. PCB mode uses Texts6 designators, component footprint and
+description fields, source library references, `PrimitiveParameters` metadata,
+and PCB `ComponentKind` filtering. It applies project-variant DNP state but does
+not join or compare schematic data.
+
+The PCB option assumes the board is synchronized. It may omit schematic-only
+or unplaced components, returns an empty `sheet` value, and can expose cached
+PCB parameters that differ from evaluated schematic parameters. It is
+available from `AltiumProjectLoadMode.METADATA_ONLY`.
 
 `AltiumDesign.compile(force=False)` returns the beta compiled schematic model.
 Project netlist, design JSON, and physical schematic rendering now derive from
@@ -36,9 +49,24 @@ where one logical `.SchDoc` appears multiple times with different resolved
 designators such as `R1.1`, `R1.2`, `R1A`, or `R1B`.
 
 `AltiumDesign.to_pnp(...)` returns pick-and-place entries from the project
-PcbDoc. With its default `include_pnp=True`, `AltiumDesign.to_json(...)` also
-includes the same data under the optional root `pnp` field when a PcbDoc is
-referenced.
+PcbDoc. The board is the default manufacturing authority: Texts6 supplies the
+physical designator and display-value comment; the component record supplies
+placement, layer, footprint, and description; and PCB `PrimitiveParameters`
+supply other metadata. The returned parameters include a canonical `Comment`
+copied from the component-owned Texts6 comment. `exclude_no_bom=True` uses the
+PCB component kind. Project variant DNP filtering still comes from the
+PrjPcb. If a board has no owned comment record, cached `Value` or `Comment`
+metadata provides the fallback.
+
+The default does not compile or join the schematic. If logical metadata is
+explicitly required, pass `use_schematic_metadata=True`; matching components
+then use compiled schematic value, description, parameters, and component kind
+while placement remains PCB-owned. This option retains the earlier PnP
+metadata behavior and cost. The default assumes the board has been
+synchronized before manufacturing output.
+
+With its default `include_pnp=True`, `AltiumDesign.to_json(...)` also includes
+PnP data under the optional root `pnp` field when a PcbDoc is referenced.
 
 The default PnP coordinate mode is `altium-pick-place`. It matches Altium's
 Pick Place export by taking the center of the bounding box of component-owned
@@ -97,7 +125,10 @@ JSON; that path does not parse the board.
 project metadata, compile options, project parameters, variants, DNP and
 component-override rows, and board discovery through `get_pcbdoc_paths()`.
 Its `schdocs` list and schematic-derived `sheet_parameters` are empty.
-`load_pcbdoc(...)` remains available and parses only the selected board.
+`load_pcbdoc(...)` remains available and parses only the selected board. The
+default `to_pnp()` is also available in this mode and lazily loads the board;
+`to_pnp(use_schematic_metadata=True)` requires `FULL` because it compiles the
+schematic.
 
 Schematic-dependent methods on a metadata-only design raise
 `AltiumProjectCapabilityError`; they do not return an empty result that could
@@ -204,7 +235,9 @@ need provenance or search over alternate names.
 Variant processing includes DNP/not-fitted handling, project current-variant
 state, variant metadata in design JSON, and per-designator parameter overrides.
 `to_bom(variant=...)` applies parameter overrides to component parameters,
-values, and descriptions while retaining DNP rows with a `dnp` flag.
+values, and descriptions while retaining DNP rows with a `dnp` flag. With
+`use_pcb_data=True`, the base facts come from placed PCB components and the
+cached PCB parameter stream rather than compiled logical components.
 `to_pnp(variant=...)` omits DNP placements for the selected variant.
 Design JSON component rows expose active-variant `dnp` and `fitted` state when
 available. Schematic SVG/IR rendering does not hide, dim, or mutate DNP
@@ -233,9 +266,9 @@ long generated names, aliases, name-source provenance, and zero-pin interface
 nets. Use `AltiumDesign.to_json(...)`, `AltiumDesign.compile().to_dict()`, or
 `AltiumDesign.to_netlist().to_json(...)` for programmatic consumers.
 
-Use `design.load_pcbdoc().components` when a PCB-backed BOM should reflect the
-components that are actually placed on the board. The `pcbdoc_bom` example shows
-that pattern.
+Use `design.to_bom(use_pcb_data=True)` when a PCB-backed BOM should reflect the
+components that are actually placed on the board. The `pcbdoc_bom` example
+shows how to build a richer custom PCB component and grouped-BOM projection.
 
 ## Examples
 

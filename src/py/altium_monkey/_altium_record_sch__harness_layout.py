@@ -18,7 +18,7 @@ from ._sch_managed_numeric import (
     unchecked_i32 as _unchecked_i32,
 )
 from ._sch_source_admission import _SourceAdmission
-from .altium_dotnet_ordinal import dotnet_ordinal_ignore_case_key
+from .altium_text_semantics import altium_name_key
 from .altium_record_sch__component import AltiumSchHarnessComponent
 from .altium_record_sch__designator import AltiumSchDesignator
 from .altium_record_sch__label import AltiumSchLabel
@@ -52,7 +52,7 @@ from .altium_serializer import (
 
 type _CoveringCommentYSize = int | Callable[[], int]
 
-_DOTNET_WHITESPACE_CATEGORIES = frozenset({"Zs", "Zl", "Zp"})
+_ALTIUM_WHITESPACE_CATEGORIES = frozenset({"Zs", "Zl", "Zp"})
 _SYMBOL_LINE_WIDTH_INTERNAL = {
     LineWidth.SMALLEST: 0,
     LineWidth.SMALL: 100_000,
@@ -563,10 +563,10 @@ def _utf16_code_unit_prefix(text: str, limit: int) -> str:
     return "".join(prefix)
 
 
-def _is_dotnet_whitespace(text: str) -> bool:
+def _is_altium_whitespace(text: str) -> bool:
     return not text or all(
         character in "\t\n\v\f\r\x85"
-        or unicodedata.category(character) in _DOTNET_WHITESPACE_CATEGORIES
+        or unicodedata.category(character) in _ALTIUM_WHITESPACE_CATEGORIES
         for character in text
     )
 
@@ -1061,10 +1061,10 @@ def _float_to_i32(value: float, *, rounded: bool) -> int:
         if not math.isfinite(value):
             return -(1 << 31)
         value = float(round(value))
-    return _dotnet_conv_i4(value)
+    return _float_to_i32_with_min_sentinel(value)
 
 
-def _dotnet_conv_i4(value: float) -> int:
+def _float_to_i32_with_min_sentinel(value: float) -> int:
     if not math.isfinite(value):
         return -(1 << 31)
     converted = int(value)
@@ -1073,7 +1073,7 @@ def _dotnet_conv_i4(value: float) -> int:
     return converted
 
 
-def _dotnet_conv_i8(value: float) -> int:
+def _float_to_i64_with_min_sentinel(value: float) -> int:
     if not math.isfinite(value):
         return -(1 << 63)
     converted = int(value)
@@ -1088,13 +1088,13 @@ def _unchecked_i64(value: int) -> int:
 
 def _round_away_from_zero(value: float) -> int:
     if not math.isfinite(value):
-        return _dotnet_conv_i4(value)
+        return _float_to_i32_with_min_sentinel(value)
     # Adding 0.5 first can round a representable value just below a midpoint
     # up to that midpoint, unlike Math.Round(AwayFromZero).
     fraction, integral = math.modf(value)
     if abs(fraction) >= 0.5:
         integral += math.copysign(1.0, value)
-    return _dotnet_conv_i4(integral)
+    return _float_to_i32_with_min_sentinel(integral)
 
 
 def _abs_safe_i32(value: int) -> int:
@@ -2386,7 +2386,7 @@ def _harness_distance(point1: tuple[int, int], point2: tuple[int, int]) -> int:
     delta_y = _f32(_unchecked_i32(point1[1] - point2[1]))
     squared = _f32(_f32(delta_x * delta_x) + _f32(delta_y * delta_y))
     distance = math.sqrt(squared)
-    return _dotnet_conv_i4(float(round(distance)))
+    return _float_to_i32_with_min_sentinel(float(round(distance)))
 
 
 def _harness_manual_half_edge_points(
@@ -3138,10 +3138,10 @@ def _component_bounds_center_internal(
             _unchecked_i32_offset(location_y, 750_000),
         )
     normalized = bounds.normalized()
-    left = _dotnet_conv_i4(normalized.x1_mils * 10_000.0)
-    right = _dotnet_conv_i4(normalized.x2_mils * 10_000.0)
-    top = _dotnet_conv_i4(normalized.y1_mils * 10_000.0)
-    bottom = _dotnet_conv_i4(normalized.y2_mils * 10_000.0)
+    left = _float_to_i32_with_min_sentinel(normalized.x1_mils * 10_000.0)
+    right = _float_to_i32_with_min_sentinel(normalized.x2_mils * 10_000.0)
+    top = _float_to_i32_with_min_sentinel(normalized.y1_mils * 10_000.0)
+    bottom = _float_to_i32_with_min_sentinel(normalized.y2_mils * 10_000.0)
     width = _abs_safe_i32(_unchecked_i32(right - left))
     height = _abs_safe_i32(_unchecked_i32(bottom - top))
     return (
@@ -3979,7 +3979,7 @@ class AltiumSchHarnessLayoutLabel(_HarnessLibraryComponentMixin, AltiumSchLabel)
                 ),
             ),
         ]
-        if not _is_dotnet_whitespace(display_text):
+        if not _is_altium_whitespace(display_text):
             operations.extend(
                 self._text_geometry_operations(
                     ctx,
@@ -4158,13 +4158,15 @@ class _HarnessCoveringLine:
         delta_x = point2[0] - point1[0]
         delta_y = point2[1] - point1[1]
         scale = 100_000 if is_big else 1
-        return _dotnet_conv_i4(math.sqrt(delta_x * delta_x + delta_y * delta_y) * scale)
+        return _float_to_i32_with_min_sentinel(
+            math.sqrt(delta_x * delta_x + delta_y * delta_y) * scale
+        )
 
     def reversed(self) -> _HarnessCoveringLine:
         return _HarnessCoveringLine(self.point2, self.point1, self.thickness)
 
 
-_covering_uid_key = dotnet_ordinal_ignore_case_key
+_covering_uid_key = altium_name_key
 
 
 @dataclass(frozen=True, slots=True)
@@ -5202,13 +5204,13 @@ def _update_covering_physical_offsets(
             _f32(physical_bundle_length),
             _f32(graphical_length),
         )
-        covering.physical_start_point_distance = _dotnet_conv_i8(
+        covering.physical_start_point_distance = _float_to_i64_with_min_sentinel(
             _f32(
                 _f32(_unchecked_i32(-covering.visual_start_point_distance))
                 * physical_scale
             )
         )
-        covering.physical_end_point_distance = _dotnet_conv_i8(
+        covering.physical_end_point_distance = _float_to_i64_with_min_sentinel(
             _f32(
                 _f32(_unchecked_i32(-covering.visual_end_point_distance))
                 * physical_scale
@@ -5223,13 +5225,13 @@ def _update_covering_physical_offsets(
         _f32(graphical_length),
         _f32(physical_bundle_length),
     )
-    covering._covering_calculated_start_distance = _dotnet_conv_i4(
+    covering._covering_calculated_start_distance = _float_to_i32_with_min_sentinel(
         _f32(
             _f32(_unchecked_i64(-covering.physical_start_point_distance))
             * graphical_scale
         )
     )
-    covering._covering_calculated_end_distance = _dotnet_conv_i4(
+    covering._covering_calculated_end_distance = _float_to_i32_with_min_sentinel(
         _f32(
             _f32(_unchecked_i64(-covering.physical_end_point_distance))
             * graphical_scale
@@ -5326,8 +5328,10 @@ def _correct_covering_offsets(
     end_reduction = float(excess) / (float(start_distance) / end_distance + 1.0)
     start_reduction = float(excess) - end_reduction
     return (
-        _unchecked_i32(start_distance - _dotnet_conv_i4(start_reduction)),
-        _unchecked_i32(end_distance - _dotnet_conv_i4(end_reduction)),
+        _unchecked_i32(
+            start_distance - _float_to_i32_with_min_sentinel(start_reduction)
+        ),
+        _unchecked_i32(end_distance - _float_to_i32_with_min_sentinel(end_reduction)),
     )
 
 
@@ -5411,8 +5415,8 @@ def _move_covering_point(
     length = math.sqrt(float(delta_x) * delta_x + float(delta_y) * delta_y)
     if delta_x == -(1 << 31) or delta_y == -(1 << 31):
         raise OverflowError("managed diagonal component distance overflows Int32")
-    move_x = _dotnet_conv_i4(move_by * abs(delta_x) / length)
-    move_y = _dotnet_conv_i4(move_by * abs(delta_y) / length)
+    move_x = _float_to_i32_with_min_sentinel(move_by * abs(delta_x) / length)
+    move_y = _float_to_i32_with_min_sentinel(move_by * abs(delta_y) / length)
     return (
         _unchecked_i32_offset(point1[0], move_x if point1[0] < point2[0] else -move_x),
         _unchecked_i32_offset(point1[1], move_y if point1[1] < point2[1] else -move_y),
@@ -5511,12 +5515,16 @@ def _covering_perpendicular(
     x2 = (-b + root) / (2.0 * a)
     return (
         (
-            _dotnet_conv_i4(x1 * 100_000.0),
-            _dotnet_conv_i4((perpendicular_slope * x1 + intercept) * 100_000.0),
+            _float_to_i32_with_min_sentinel(x1 * 100_000.0),
+            _float_to_i32_with_min_sentinel(
+                (perpendicular_slope * x1 + intercept) * 100_000.0
+            ),
         ),
         (
-            _dotnet_conv_i4(x2 * 100_000.0),
-            _dotnet_conv_i4((perpendicular_slope * x2 + intercept) * 100_000.0),
+            _float_to_i32_with_min_sentinel(x2 * 100_000.0),
+            _float_to_i32_with_min_sentinel(
+                (perpendicular_slope * x2 + intercept) * 100_000.0
+            ),
         ),
     )
 
@@ -5756,7 +5764,9 @@ def _covering_line_intersection(
     scale = 100_000 if big1 and big2 else 1
     x = (b2 * c1 - b1 * c2) / determinant
     y = (a1 * c2 - a2 * c1) / determinant
-    return _dotnet_conv_i4(x * scale), _dotnet_conv_i4(y * scale)
+    return _float_to_i32_with_min_sentinel(x * scale), _float_to_i32_with_min_sentinel(
+        y * scale
+    )
 
 
 def _covering_multi_polygons(
@@ -5944,8 +5954,8 @@ def _covering_wave_points(
 ) -> tuple[tuple[int, int], tuple[int, int]]:
     vector_x, vector_y = _covering_wave_vector(point, point2)
     quarter1, quarter2 = _covering_quarter_points(point, point2)
-    offset_x = _dotnet_conv_i4(_f32(vector_x * _f32(100_000)))
-    offset_y = _dotnet_conv_i4(_f32(vector_y * _f32(100_000)))
+    offset_x = _float_to_i32_with_min_sentinel(_f32(vector_x * _f32(100_000)))
+    offset_y = _float_to_i32_with_min_sentinel(_f32(vector_y * _f32(100_000)))
     return (
         (
             _unchecked_i32_offset(quarter1[0], -offset_x),
@@ -6023,12 +6033,12 @@ def _covering_pattern_brush(
     resource = harness_covering_pattern_for_type(int(covering_type))
     source_width = float(resource.source_width)
     source_height = float(resource.source_height)
-    height = _dotnet_conv_i4(
+    height = _float_to_i32_with_min_sentinel(
         float(round(_covering_apply_zoom(ctx, path_data.height, units_per_px)))
     )
     scale = _f32(_f32(height) / _f32(max(source_height, 1.0)))
     tile_width = _f32(_f32(source_width) * scale)
-    rendered_length = _dotnet_conv_i4(
+    rendered_length = _float_to_i32_with_min_sentinel(
         float(round(_covering_apply_zoom(ctx, path_data.length, units_per_px)))
     )
     repeat_count = _f32(
@@ -6103,8 +6113,8 @@ def _export_covering_pattern_brush(
 ) -> dict[str, object]:
     cosine = abs(math.cos(slope))
     sine = abs(math.sin(slope))
-    pattern_width = _dotnet_conv_i4(width * cosine + height * sine)
-    pattern_height = _dotnet_conv_i4(width * sine + height * cosine)
+    pattern_width = _float_to_i32_with_min_sentinel(width * cosine + height * sine)
+    pattern_height = _float_to_i32_with_min_sentinel(width * sine + height * cosine)
     degrees = slope * 180.0 / math.pi
     if degrees in {0.0, 180.0}:
         to_x, to_y = width, 0.0

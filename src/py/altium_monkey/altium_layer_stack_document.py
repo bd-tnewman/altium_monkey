@@ -12,6 +12,7 @@ import base64
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum, IntEnum
+import math
 from typing import TYPE_CHECKING
 import re
 import uuid
@@ -231,6 +232,13 @@ def _float_token(value: object) -> float | None:
         return float(token)
     except (TypeError, ValueError):
         return None
+
+
+def _finite_float_token(value: object) -> float | None:
+    parsed = _float_token(value)
+    if parsed is None or not math.isfinite(parsed):
+        return None
+    return parsed
 
 
 def _parse_int_like_token(value: object) -> int | None:
@@ -473,6 +481,36 @@ def _stackupx_property_value(
         if prop_name == name:
             return value
     return ""
+
+
+def _stackupx_property_token(
+    properties: tuple[tuple[str, str, str], ...],
+    name: str,
+) -> tuple[bool, str]:
+    for prop_name, _type_name, value in properties:
+        if prop_name == name:
+            return True, value
+    return False, ""
+
+
+def _layer_loss_tangent(
+    fields: Mapping[str, str],
+    stackupx_properties: tuple[tuple[str, str, str], ...],
+    *,
+    prefer_lsm: bool,
+) -> float | None:
+    lsm_present, lsm_value = _stackupx_property_token(
+        stackupx_properties,
+        "LossTangent",
+    )
+    flattened = ("DIELLOSSTANGENT" in fields, fields.get("DIELLOSSTANGENT", ""))
+    sources = ((lsm_present, lsm_value), flattened)
+    if not prefer_lsm:
+        sources = (flattened, (lsm_present, lsm_value))
+    for present, value in sources:
+        if present:
+            return _finite_float_token(value)
+    return None
 
 
 def _stackupx_property_length_mils(
@@ -2616,6 +2654,7 @@ class AltiumLayerStackDocument:
             registry_entries=registry_entries,
             v9_groups=v9_groups,
             v8_groups=v8_groups,
+            prefer_lsm_loss_tangent=source_origin == "stackup",
         )
         stack_layers = _with_stack_custom_data_layer_flags(
             stack_layers,
@@ -4310,10 +4349,18 @@ def _semantic_stackupx_property_entries(
     layer: AltiumStackLayer,
 ) -> tuple[str, ...]:
     entries: list[str] = []
+    loss_tangent = _finite_float_token(layer.dielectric_loss_tangent)
+    loss_tangent_written = False
     for name, _type_name, value in tuple(layer.stackupx_properties or ()):
         property_name = str(name or "").strip()
         if not property_name:
             continue
+        if property_name.casefold() == "losstangent":
+            if loss_tangent is None or loss_tangent_written:
+                continue
+            property_name = "LossTangent"
+            value = format(loss_tangent, ".12g")
+            loss_tangent_written = True
         entries.append(f"{prefix}$LSM${property_name}={value}")
     return tuple(entries)
 
@@ -5587,18 +5634,21 @@ def _build_stack_layers(
     registry_entries: dict[str, AltiumLayerRegistryEntry],
     v9_groups: dict[int, dict[str, str]],
     v8_groups: dict[int, dict[str, str]],
+    prefer_lsm_loss_tangent: bool,
 ) -> list[AltiumStackLayer]:
     if v9_groups:
         return _build_indexed_stack_layers(
             groups=v9_groups,
             source_family="v9",
             registry_entries=registry_entries,
+            prefer_lsm_loss_tangent=prefer_lsm_loss_tangent,
         )
     if v8_groups:
         return _build_indexed_stack_layers(
             groups=v8_groups,
             source_family="v8",
             registry_entries=registry_entries,
+            prefer_lsm_loss_tangent=prefer_lsm_loss_tangent,
         )
     return _build_legacy_stack_layers(board, raw_record, registry_entries)
 
@@ -5608,6 +5658,7 @@ def _build_indexed_stack_layers(
     groups: dict[int, dict[str, str]],
     source_family: str,
     registry_entries: dict[str, AltiumLayerRegistryEntry],
+    prefer_lsm_loss_tangent: bool,
 ) -> list[AltiumStackLayer]:
     layers: list[AltiumStackLayer] = []
     for index in sorted(groups):
@@ -5680,7 +5731,11 @@ def _build_indexed_stack_layers(
                 stackupx_type_id=_normalized_source_id(fields.get("TYPEID")),
                 copper_thickness_mils=copper_thickness,
                 dielectric_constant=_float_token(fields.get("DIELCONST")),
-                dielectric_loss_tangent=_float_token(fields.get("DIELLOSSTANGENT")),
+                dielectric_loss_tangent=_layer_loss_tangent(
+                    fields,
+                    stackupx_properties,
+                    prefer_lsm=prefer_lsm_loss_tangent,
+                ),
                 dielectric_height_mils=layer_height,
                 dielectric_material=layer_material,
                 dielectric_type=_parse_int_token(fields.get("DIELTYPE")),

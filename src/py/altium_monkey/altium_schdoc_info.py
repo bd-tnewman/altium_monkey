@@ -13,7 +13,7 @@ from typing import Any
 
 from .altium_api_markers import public_api
 from .altium_common_enums import ComponentKind
-from .altium_dotnet_ordinal import dotnet_ordinal_ignore_case_key
+from .altium_text_semantics import altium_name_key
 from .altium_record_sch__component import AltiumSchComponent
 from .altium_record_sch__designator import AltiumSchDesignator
 from .altium_record_sch__harness_connector import AltiumSchHarnessConnector
@@ -196,9 +196,9 @@ class SchComponentInfo(_RecordLocationInfoMixin):
         """
         Get a parameter value by name.
         """
-        key = dotnet_ordinal_ignore_case_key(name)
+        key = altium_name_key(name)
         for param in self.parameters:
-            if dotnet_ordinal_ignore_case_key(param.name) == key:
+            if altium_name_key(param.name) == key:
                 return param.text
         return None
 

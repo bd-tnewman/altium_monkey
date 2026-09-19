@@ -77,16 +77,7 @@ class SchEmbeddedImagePayload:
 
     @property
     def altium_source_size_px(self) -> tuple[int, int] | None:
-        """
-        Return the source size Altium reports in GeometryMaker image ops.
-        """
-        if (
-            self.native_format == SchEmbeddedImageFormat.SVG
-            and self.preview_data is not None
-        ):
-            preview = parse_bmp_info(self.preview_data)
-            if preview is not None:
-                return preview.size_px
+        """Return the source size Altium reports in GeometryMaker image ops."""
         return self.preferred_size_px
 
 

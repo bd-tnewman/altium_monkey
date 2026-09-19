@@ -52,7 +52,7 @@ from .altium_record_sch__image import AltiumSchImage
 from .altium_record_sch__label import AltiumSchLabel
 from .altium_record_sch__parameter import AltiumSchImageParameter, AltiumSchParameter
 from .altium_record_sch__parameter_set import AltiumSchParameterSet
-from .altium_dotnet_ordinal import dotnet_ordinal_ignore_case_key
+from .altium_text_semantics import altium_name_key
 from .altium_record_sch__ieee_symbol import AltiumSchIeeeSymbol, _IEEE_SYMBOL_SHAPES
 from .altium_record_sch__polygon import AltiumSchPolygon
 from .altium_record_sch__polyline import AltiumSchPolyline
@@ -442,9 +442,9 @@ class _ComponentBoundsQueries:
             if type(child) is not AltiumSchParameter:
                 continue
             self._charge_dependency_text(len(child.name))
-            if dotnet_ordinal_ignore_case_key(child.name) == "DIFFERENTIALPAIR":
+            if altium_name_key(child.name) == "DIFFERENTIALPAIR":
                 self._charge_dependency_text(len(child.text))
-                return dotnet_ordinal_ignore_case_key(child.text) == "TRUE"
+                return altium_name_key(child.text) == "TRUE"
         return False
 
     def _label_bounds(self, index: int, record: AltiumSchLabel) -> SchGeometryBounds:

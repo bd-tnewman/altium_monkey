@@ -1,3 +1,74 @@
+# altium-monkey 2026.09.18 Release Notes
+
+Package version: `2026.9.18`
+
+This release corrects hierarchical and multipart netlist compilation, recovers
+large-project compiler performance, adds fast PCB-backed manufacturing views,
+and expands integrated-library authoring and compatibility.
+
+## Changes
+
+- Fixed legacy netlist projection so pins and terminals bind through compiled
+  occurrence and source identity before display-name aliases. Logical and
+  physical designator collisions no longer move pins between components
+  (public issue #52).
+- Fixed automatic-hierarchy compilation so all sheets use the single
+  design-resolved scope. Pin-less port-to-entry bridge nets are preserved on
+  sheets that also contain ordinary pin nets (public issue #53).
+- Fixed split multipart components placed on different sheets so their bodies
+  bind through compiled occurrence identity instead of page-plus-designator
+  text lookup (public issue #62).
+- Made net-name ambiguity explicit. `Netlist.resolve_net()` now raises
+  `AmbiguousNetNameError` when a provenance alias maps to multiple nets, while
+  `Netlist.get_nets_by_alias()` returns every match. Canonical net names remain
+  the unique global lookup namespace.
+- Recovered schematic compiler performance by reusing compile-scoped source,
+  hierarchy, parameter, connectivity, and graph work without weakening
+  Unicode, ordering, hierarchy, multipart, or net-ownership behavior. The
+  governed large-project compile checkpoint fell from approximately 780
+  seconds to approximately 13.6 seconds on the development workstation
+  (public issue #60).
+- Changed `AltiumDesign.to_pnp()` to use PcbDoc placement and component text as
+  its default manufacturing authority, avoiding a schematic compile. The
+  historical display comment and canonical `Comment` parameter are preserved.
+  Pass `use_schematic_metadata=True` to opt into the compiled schematic
+  metadata join.
+- Kept the existing compiled-schematic default for `AltiumDesign.to_bom()` but
+  removed its redundant netlist construction. The new
+  `to_bom(use_pcb_data=True)` option provides a no-compile view of physical
+  parts placed on the PcbDoc. PCB mode assumes a synchronized board and can
+  differ from evaluated schematic metadata or omit unplaced logical parts.
+- Added deterministic, transactional
+  `AltiumIntLib.create_from_libraries(...)` authoring from ordered SchLib and
+  PcbLib paths. It supports shared and alternate PCB-library choices, preserves
+  exact source bytes and embedded PcbLib assets, returns typed counts, hashes,
+  and warnings, and runs cross-platform without Altium. PCB3DLib,
+  non-PCBLIB models, bytes/logical-name inputs, and ambiguity overrides remain
+  outside this bounded first API.
+- Fixed `AltiumIntLib` reads of Altium's raw `0x00` metadata envelope for
+  `LibCrossRef.Txt` and `Parameters   .bin`. Bounded zlib decoding now rejects
+  truncated or trailing compressed data; the default 256 MiB per-stream limit
+  is configurable through `max_decompressed_stream_bytes`. Exact raw reads and
+  the writer's existing `0x02` output remain unchanged.
+- Added transactional `AltiumSchLib.rename_symbol(...)` and
+  `AltiumPcbLib.rename_footprint(...)` operations. They synchronize container
+  identities, preserve auxiliary and opaque streams, reject collisions without
+  partial mutation, and retain serialized PCB GUID and unique-ID tables.
+- Fixed standalone `.stackup` loss-tangent parsing for Altium's
+  `$LSM$LossTangent` property while preserving compatibility with the earlier
+  `DielLossTangent` representation (public issue #63).
+- Corrected SchDoc geometry for wrapped `TSVGImage` source rectangles, opaque
+  Note shadow outlines, and final-line TextFrame metrics after an explicit line
+  break.
+- Documented the Altium scripting OutJob runner as a best-effort bridge for
+  folder-based manufacturing outputs. PDF/Publish, schematic and PCB prints,
+  and Draftsman outputs can complete without producing files. An OutJob must be
+  a logical project document, and callers must verify every expected artifact.
+  Use Altium's OutJob editor or Project Releaser for document output and native
+  multi-container orchestration (public issues #33, #34, and #61).
+
+---
+
 # altium-monkey 2026.09.15 Release Notes
 
 Package version: `2026.9.15`

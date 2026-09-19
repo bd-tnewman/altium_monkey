@@ -109,6 +109,7 @@ example_ids = [
   "draftsman_multipage_notes",
   "draftsman_create_blank_project",
   "intlib_extract_sources",
+  "intlib_create_from_libraries",
   "embedded_asset_inventory",
   "extractable_asset_inventory",
 ]

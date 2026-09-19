@@ -651,6 +651,7 @@ def test_domain_docs_list_public_workflow_examples() -> None:
         "AltiumStackBranch",
         "source_stackup_ref",
         "layers_for_board_region",
+        "intlib_create_from_libraries",
         "intlib_extract_sources",
         "altium_monkey.design.b0",
         "altium_monkey.design.a2",
@@ -2217,6 +2218,30 @@ def test_outjob_runner_prepares_static_rt_super_c1_outjob(
 
     project = AltiumPrjPcb(working_project)
     assert project.outjob().path.name == "reference_gen.OutJob"
+
+
+def test_public_outjob_docs_disclose_automation_limits() -> None:
+    readme = (PUBLIC_ROOT / "README.md").read_text(encoding="utf-8")
+    prjpcb_doc = (PUBLIC_ROOT / "docs" / "prjpcb.md").read_text(encoding="utf-8")
+    example_doc = (PUBLIC_ROOT / "examples" / "outjob_runner" / "README.md").read_text(
+        encoding="utf-8"
+    )
+    combined = "\n".join((readme, prjpcb_doc, example_doc))
+
+    for token in (
+        "Altium's scripting",
+        "OutJobRunResult.success",
+        "stage_outjob_copy=False",
+        "PDF/Publish",
+        "Project Releaser",
+        "verify every",
+    ):
+        assert token in combined
+
+    assert "project's logical documents" in " ".join(prjpcb_doc.split())
+    assert "does not close the opened project documents" in " ".join(
+        example_doc.split()
+    )
 
 
 def test_schdoc_clean_applies_key_style_rules(check_examples_root: Path) -> None:
@@ -5911,6 +5936,81 @@ def test_intlib_extract_sources_reports_metadata_and_writes_parseable_sources(
     with AltiumIntLib(source_intlib) as intlib:
         assert intlib.component_parse_error is None
         assert len(intlib.get_source_entries()) == manifest["source_count"]
+
+
+def test_intlib_create_from_libraries_packages_ic_subset_two_ways(
+    check_examples_root: Path,
+) -> None:
+    example = next(
+        item
+        for item in _load_examples()
+        if item["id"] == "intlib_create_from_libraries"
+    )
+    result = _run_example_entrypoint(example, check_examples_root)
+    assert result.returncode == 0, result.stderr
+
+    from altium_monkey import AltiumIntLib
+
+    example_root = check_examples_root / "intlib_create_from_libraries"
+    manifest = json.loads(
+        (example_root / "output" / "intlib_create_manifest.json").read_text(
+            encoding="ascii"
+        )
+    )
+    assert manifest["component_graphs_match"] is True
+    assert manifest["deterministic"] == {
+        "aggregate": True,
+        "multi_source": True,
+    }
+    assert manifest["component_graph"] == {
+        "24LC32AT": ["SOT23-5"],
+        "MIMXRT685SFVKB": ["VFBGA176"],
+        "MX25R6435FZNIL0": ["W25Q_XSON_8"],
+        "RC0603FR-0710KL": ["R0603_0.55MM_MD"],
+        "RC0603FR-074K7L": ["R0603_0.55MM_MD"],
+        "SM712-02HTG": ["SOT143B"],
+        "SM712.TCT": ["D_SOD-323_P", "SOT143B"],
+    }
+
+    builds = manifest["builds"]
+    assert set(builds) == {"multi_source", "aggregate"}
+    assert builds["multi_source"]["source_count"] == 14
+    assert builds["aggregate"]["source_count"] == 2
+    for build in builds.values():
+        assert build["component_count"] == 7
+        assert build["footprint_count"] == 7
+        assert build["footprint_link_count"] == 8
+        assert build["embedded_model_count"] == 5
+        assert build["parameter_record_count"] == 21
+        assert build["source_hashes_match"] is True
+        assert build["warnings"] == [
+            {
+                "code": "unused_footprint",
+                "message": (
+                    "footprint is preserved in the PcbLib but is not linked by a "
+                    "component"
+                ),
+                "subject": "PCA9420",
+            }
+        ]
+
+        intlib_path = example_root / build["intlib"]
+        with AltiumIntLib(intlib_path) as intlib:
+            assert intlib.component_parse_error is None
+            assert {
+                component.name: [model.name for model in component.models]
+                for component in intlib.components
+            } == manifest["component_graph"]
+            for source in build["sources"]:
+                prepared = example_root / next(
+                    path
+                    for paths in manifest["prepared"].values()
+                    for path in (paths if isinstance(paths, list) else [paths])
+                    if Path(path).name == source["logical_name"]
+                )
+                assert (
+                    intlib.read_stream(source["stream_path"]) == prepared.read_bytes()
+                )
 
 
 def test_pcblib_add_free_3d_extruded_writes_component_body(

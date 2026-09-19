@@ -6,7 +6,7 @@ from collections.abc import Collection, Iterable, Mapping
 from typing import TYPE_CHECKING, Literal
 
 from .altium_record_types import SchPrimitive, SchRecordType
-from .altium_dotnet_ordinal import dotnet_ordinal_ignore_case_key
+from .altium_text_semantics import altium_name_key
 from .altium_record_sch__junction import AltiumSchJunction
 from .altium_record_sch__parameter import AltiumSchImageParameter, AltiumSchParameter
 from .altium_serializer import FieldDef, _read_param_boolean
@@ -67,7 +67,7 @@ _COMPONENT_OBJECT_LIST_GRAPHICAL_TYPES = frozenset(
     }
 )
 _COMPONENT_BOUND_PARAMETER_NAMES = frozenset(
-    dotnet_ordinal_ignore_case_key(name)
+    altium_name_key(name)
     for name in (
         "DefaultNet",
         "HiddenNetName",
@@ -83,7 +83,7 @@ _COMPONENT_BOUND_PARAMETER_NAMES = frozenset(
 def _parameter_attachment_role(
     parameter: AltiumSchParameter, owner: object | None
 ) -> Literal["ordinary", "comment", "description", "length", "pin_state", "unattached"]:
-    name = dotnet_ordinal_ignore_case_key(parameter.name)
+    name = altium_name_key(parameter.name)
     owner_type = getattr(owner, "record_type", None)
     if name == "COMMENT":
         return (
@@ -217,10 +217,7 @@ def _component_object_list_owner(record: SchPrimitive) -> SchPrimitive | None:
         return None
     owner = record.parent
     if isinstance(record, AltiumSchParameter):
-        if (
-            dotnet_ordinal_ignore_case_key(record.name)
-            in _COMPONENT_BOUND_PARAMETER_NAMES
-        ):
+        if altium_name_key(record.name) in _COMPONENT_BOUND_PARAMETER_NAMES:
             return None
         # UpdateOwner rewrites one ParameterList owner, not a recursive chain.
         if owner is not None and owner.record_type == SchRecordType.IMPL_PARAMS:
@@ -311,7 +308,7 @@ def _source_compile_mask_bounds(
 
 
 def _component_bound_field_role(child: object) -> str | None:
-    from .altium_dotnet_ordinal import dotnet_ordinal_ignore_case_key
+    from .altium_text_semantics import altium_name_key
     from .altium_record_sch__designator import AltiumSchDesignator
     from .altium_record_sch__parameter import AltiumSchParameter
 
@@ -319,7 +316,7 @@ def _component_bound_field_role(child: object) -> str | None:
         return "designator"
     if (
         isinstance(child, AltiumSchParameter)
-        and dotnet_ordinal_ignore_case_key(child.name) == "COMMENT"
+        and altium_name_key(child.name) == "COMMENT"
     ):
         return "comment"
     return None

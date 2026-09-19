@@ -35,6 +35,51 @@ and stable component identities.
 `altium_monkey.schematic_bom.a0` transport. `AltiumDesign.to_bom()` remains the
 list-returning compatibility API.
 
+## BOM authority
+
+`AltiumDesign.to_bom()` remains a compiled-schematic projection by default.
+It compiles the logical design directly and does not build an intermediate
+netlist. This mode includes logical component occurrences and evaluated
+schematic parameters.
+
+Pass `use_pcb_data=True` for a no-compile manufacturing view of physical parts
+placed on the PcbDoc. That mode uses Texts6 physical designators, footprint and
+description fields from the component record, source library references, and
+the PcbDoc `PrimitiveParameters/Data` cache. PCB `ComponentKind` excludes
+`GRAPHICAL`, `NET_TIE_NO_BOM`, and `STANDARD_NO_BOM` components. Project
+variant DNP rows and cached parameter overrides are still applied.
+
+PCB mode assumes that the board is synchronized. It can omit schematic-only or
+unplaced parts, cannot provide a schematic source-sheet filename, and may
+expose cached parameters that differ from evaluated schematic parameters. It
+does not join or compare the schematic and is available from an
+`AltiumProjectLoadMode.METADATA_ONLY` project. The versioned
+`to_bom_payload()` contract remains schematic-only.
+
+## Pick-and-place authority
+
+`AltiumDesign.to_pnp()` is a PCB projection by default. Placement, rotation,
+layer, footprint, physical designator, description, and parameters come from
+the PcbDoc; `exclude_no_bom=True` also applies the PCB component kind. In
+particular, physical designators and the display-value `comment` use their
+component-owned Texts6 records, while other metadata uses the PcbDoc
+`PrimitiveParameters/Data` cache. The returned parameter map includes a
+canonical `Comment` entry copied from the same Texts6 comment. If an older
+board has no owned comment record, `value`/`Value` and then
+`comment`/`Comment` provide the fallback.
+
+This default assumes the PcbDoc is the synchronized manufacturing authority.
+It does not compile or join the schematic, and it is therefore available from
+an `AltiumProjectLoadMode.METADATA_ONLY` project. Project variant DNP filtering
+still comes from the PrjPcb.
+
+Pass `use_schematic_metadata=True` to retain the earlier behavior: compile the
+schematic netlist, join by physical designator, and use matching schematic
+value, description, parameters, and component kind. Placement facts remain
+PCB-owned in both modes. The opt-in is useful when a caller explicitly needs
+logical metadata or wants to compare a synchronized PCB with the schematic;
+it is not the default PnP cost model.
+
 ## Netlist Connectivity
 
 Project-level `AltiumDesign.to_netlist()` and `AltiumDesign.to_json()` are

@@ -40,7 +40,7 @@ from .altium_sch_record_helpers import (
 )
 from .altium_sch_svg_renderer import svg_text
 from .altium_text_metrics import measure_gdi_typographic_bounds, measure_text_width
-from .altium_dotnet_ordinal import dotnet_ordinal_ignore_case_key
+from .altium_text_semantics import altium_name_key
 
 
 _IMPORTED_DIRECTIVE_COLOR = 0xFFBF00
@@ -213,10 +213,10 @@ class AltiumSchParameterSet(RotatedLocalPointMixin, SchGraphicalObject):
                 continue
             if budget is not None:
                 budget.reserve_text_characters(len(param.name))
-            if dotnet_ordinal_ignore_case_key(param.name) == "DIFFERENTIALPAIR":
+            if altium_name_key(param.name) == "DIFFERENTIALPAIR":
                 if budget is not None:
                     budget.reserve_text_characters(len(param.text))
-                return dotnet_ordinal_ignore_case_key(param.text) == "TRUE"
+                return altium_name_key(param.text) == "TRUE"
         return False
 
     def _get_display_string(self, ctx: "SchSvgRenderContext | None" = None) -> str:

@@ -9,6 +9,12 @@ records contain resolved designator strings, placement, footprint names,
 component kind, and parameters parsed from the PcbDoc component parameter
 stream.
 
+For the standard list-returning BOM row shape, use
+`design.to_bom(use_pcb_data=True)`. That API provides the same no-compile PCB
+authority with project-variant DNP handling. This example reads the component
+records directly because it also emits placement fields and a custom grouped
+BOM view.
+
 ## What It Shows
 
 1. Loading a project with `AltiumDesign.from_prjpcb(...)`
@@ -48,5 +54,6 @@ examples/pcbdoc_bom/output/pcbdoc_bom.json
 marked as no-BOM. `pcbdoc_bom.json` contains only BOM-included rows plus a
 grouped BOM section.
 
-For schematic-driven BOMs with variant DNP handling, use `AltiumDesign.to_bom`.
+For logical compiled-schematic BOMs, use `AltiumDesign.to_bom()` with its
+default options.
 For placement-centric output, see `pcbdoc_pick_n_place`.

@@ -108,7 +108,35 @@ result = prj.outjob().run(timeout_seconds=300)
 ```
 
 The runner launches Altium Designer, runs the OutJob, and waits for the script
-completion marker. Altium may remain open after the run completes.
+completion marker. Altium may remain open after the run completes. The marker
+does not prove that Altium produced any output files; callers must verify every
+required artifact.
+
+This runner uses Altium's scripting API and is currently reliable only for the
+folder-based `GeneratedFiles` manufacturing workflows exercised by the project.
+PDF/Publish containers, schematic or PCB prints, and Draftsman output can
+silently produce no files on current Altium versions. Mixed-media OutJobs are
+not fully iterated.
+
+Altium's SDK guidance requires the OutJob to be one of the project's logical
+documents. A sibling `.OutJob` that is absent from the `.PrjPcb` can return a
+clean script marker without generating anything. Run against a disposable
+project copy and keep its project-bound OutJob identity:
+
+```python
+prj = AltiumPrjPcb("working-copy/project.PrjPcb")
+result = prj.outjob().run(
+    timeout_seconds=300,
+    stage_outjob_copy=False,
+)
+if not expected_gerber.exists():
+    raise RuntimeError("Altium returned without generating the expected Gerber")
+```
+
+Use Altium's OutJob editor or Project Releaser for PDF/document outputs and for
+native orchestration across all configured output containers. See the
+[README limitation](../README.md#known-outjob-automation-limitation) and the
+[`outjob_runner` example](../examples/outjob_runner/README.md).
 
 ## Use With Care
 
@@ -131,4 +159,3 @@ Start with:
 
 See [AltiumDesign](altium_design.md) for project-level analysis and generated
 JSON contracts.
-

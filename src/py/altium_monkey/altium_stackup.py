@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
 from typing import TYPE_CHECKING
 import uuid
@@ -608,7 +609,14 @@ def _layer_context_records(
         (f"{prefix}_{substack.export_id}USEDBYPRIMS", _format_bool_text(False)),
         (f"{prefix}_{substack.export_id}SHARED", "0"),
     ]
-    _append_stackupx_property_records(records, f"{prefix}_{substack.export_id}", layer)
+    family = str(getattr(layer, "family", "")).strip().lower()
+    _append_stackupx_property_records(
+        records,
+        f"{prefix}_{substack.export_id}",
+        layer,
+        synchronize_loss_tangent=family in {"dielectric", "solder_mask"},
+        loss_tangent=_finite_float_attribute(layer, "dielectric_loss_tangent"),
+    )
     return tuple(records)
 
 
@@ -633,12 +641,9 @@ def _append_dielectric_records(
     if dielectric_type is not None:
         records.append((f"{prefix}DIELTYPE", str(int(dielectric_type))))
     _append_optional_float(records, f"{prefix}DIELCONST", layer, "dielectric_constant")
-    _append_optional_float(
-        records,
-        f"{prefix}DIELLOSSTANGENT",
-        layer,
-        "dielectric_loss_tangent",
-    )
+    loss_tangent = _finite_float_attribute(layer, "dielectric_loss_tangent")
+    if loss_tangent is not None:
+        records.append((f"{prefix}DIELLOSSTANGENT", format(loss_tangent, ".12g")))
     _append_optional_mil(
         records, f"{prefix}DIELHEIGHT", layer, "dielectric_height_mils"
     )
@@ -648,18 +653,72 @@ def _append_dielectric_records(
     coverlay_expansion = str(getattr(layer, "coverlay_expansion", "") or "")
     if coverlay_expansion:
         records.append((f"{prefix}COVERLAY_EXPANSION", coverlay_expansion))
-    _append_stackupx_property_records(records, prefix, layer)
+    _append_stackupx_property_records(
+        records,
+        prefix,
+        layer,
+        synchronize_loss_tangent=True,
+        loss_tangent=loss_tangent,
+    )
 
 
 def _append_stackupx_property_records(
     records: list[tuple[str, str]],
     prefix: str,
     layer: "AltiumStackLayer",
+    *,
+    synchronize_loss_tangent: bool = False,
+    loss_tangent: float | None = None,
 ) -> None:
-    for name, _type_name, value in layer.stackupx_properties:
-        property_name = str(name or "").strip()
-        if property_name:
-            records.append((f"{prefix}$LSM${property_name}", str(value or "")))
+    properties = _stackupx_property_pairs(layer)
+    if synchronize_loss_tangent:
+        properties = _synchronized_loss_tangent_properties(properties, loss_tangent)
+    records.extend((f"{prefix}$LSM${name}", value) for name, value in properties)
+
+
+def _stackupx_property_pairs(
+    layer: "AltiumStackLayer",
+) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (property_name, str(value or ""))
+        for name, _type_name, value in layer.stackupx_properties
+        if (property_name := str(name or "").strip())
+    )
+
+
+def _synchronized_loss_tangent_properties(
+    properties: tuple[tuple[str, str], ...],
+    loss_tangent: float | None,
+) -> tuple[tuple[str, str], ...]:
+    canonical = (
+        ("LossTangent", format(loss_tangent, ".12g"))
+        if loss_tangent is not None
+        else None
+    )
+    synchronized: list[tuple[str, str]] = []
+    loss_tangent_written = False
+    for name, value in properties:
+        if name.casefold() != "losstangent":
+            synchronized.append((name, value))
+        elif canonical is not None and not loss_tangent_written:
+            synchronized.append(canonical)
+            loss_tangent_written = True
+    if canonical is not None and not loss_tangent_written:
+        synchronized.append(canonical)
+    return tuple(synchronized)
+
+
+def _finite_float_attribute(source: object, attr: str) -> float | None:
+    value = getattr(source, attr, None)
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(parsed):
+        return None
+    return parsed
 
 
 def _append_optional_mil(

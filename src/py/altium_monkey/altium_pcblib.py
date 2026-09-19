@@ -40,7 +40,12 @@ from .altium_pcb_stream_helpers import (
     build_length_prefixed_ascii as _build_length_prefixed_ascii,
     count_length_prefixed_records as _count_length_prefixed_records,
 )
-from .altium_pcblib_sections import PcbLibLayerKindMapping, PcbLibSectionKeys
+from .altium_pcblib_sections import (
+    PcbLibComponentParamsToc,
+    PcbLibLayerKindMapping,
+    PcbLibSectionKeyEntry,
+    PcbLibSectionKeys,
+)
 from .altium_pcb_embedded_model_compose import (
     collect_pcblib_embedded_model_entries,
     copy_footprint_with_models_into_builder,
@@ -420,6 +425,7 @@ class AltiumPcbFootprint:
 
         # OLE storage name (may be truncated to 31 chars for long names)
         self._ole_storage_name: str = name
+        self._source_storage_name: str = name
 
         # Raw binary data for round-trip
         self.raw_header: bytes | None = None
@@ -2264,6 +2270,72 @@ def _altium_ole_truncate(
     return candidate
 
 
+_PCBLIB_RESERVED_STORAGE_NAMES = frozenset(
+    {"fileheader", "fileversioninfo", "library", "sectionkeys"}
+)
+
+
+def _validate_pcblib_footprint_name(name: str) -> None:
+    if not isinstance(name, str) or not name:
+        raise ValueError("footprint name must be a non-empty string")
+    try:
+        encoded = name.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise ValueError("footprint name must contain printable ASCII only") from exc
+    if any(byte < 0x20 or byte > 0x7E for byte in encoded):
+        raise ValueError("footprint name must contain printable ASCII only")
+    if len(encoded) > 255:
+        raise ValueError("footprint name exceeds the 255-byte PcbLib limit")
+
+
+def _plan_pcblib_storage_names(
+    names: Sequence[str],
+    unavailable_storage_names: Sequence[str] = (),
+) -> tuple[str, ...]:
+    logical_names: set[str] = set()
+    assigned = {name.casefold() for name in unavailable_storage_names}
+    storage_names: list[str] = []
+    for name in names:
+        _validate_pcblib_footprint_name(name)
+        folded_name = name.casefold()
+        if folded_name in logical_names:
+            raise ValueError("footprint names collide case-insensitively")
+        logical_names.add(folded_name)
+
+        sanitized = _sanitize_ole_name(name)
+        if len(sanitized) <= 31:
+            storage_name = sanitized
+            if storage_name.casefold() in assigned:
+                raise ValueError("sanitized footprint storage names collide")
+        else:
+            base = sanitized[:31]
+            storage_name = base
+            counter = 1
+            while storage_name.casefold() in assigned or (
+                len(storage_name) >= 30 and storage_name[30] == " "
+            ):
+                suffix = str(counter)
+                storage_name = sanitized[: 31 - len(suffix)] + suffix
+                counter += 1
+        folded_storage = storage_name.casefold()
+        if folded_storage in _PCBLIB_RESERVED_STORAGE_NAMES:
+            raise ValueError(
+                f"footprint storage name {storage_name!r} is reserved by PcbLib"
+            )
+        assigned.add(folded_storage)
+        storage_names.append(storage_name)
+    return tuple(storage_names)
+
+
+@dataclass(frozen=True)
+class _PcbLibReadLimits:
+    max_container_bytes: int = 256 * 1024 * 1024
+    max_stream_bytes: int = 64 * 1024 * 1024
+    max_streams: int = 4096
+    max_directory_entries: int = 8192
+    max_directory_depth: int = 16
+
+
 # ============================================================================
 # Library Container
 # ============================================================================
@@ -2333,6 +2405,10 @@ class AltiumPcbLib:
         self.raw_section_keys: bytes | None = None
         self.combine_provenance: dict[str, object] | None = None
         self._authoring_builder: Any | None = None
+        self._source_streams: dict[str, bytes] = {}
+        self._source_storages: tuple[str, ...] = ()
+        self._source_footprint_keys: tuple[str, ...] = ()
+        self._read_limits = _PcbLibReadLimits()
 
         if self.filepath is not None:
             if self.filepath.is_dir():
@@ -2452,6 +2528,202 @@ class AltiumPcbLib:
             item_guid=item_guid,
             revision_guid=revision_guid,
         )
+
+    def rename_footprint(
+        self,
+        footprint_or_name: AltiumPcbFootprint | str,
+        name: str,
+    ) -> AltiumPcbFootprint:
+        """Rename one footprint owned by this library."""
+        if self._authoring_builder is not None:
+            return self._rename_authored_footprint(footprint_or_name, name)
+
+        footprint = self._resolve_owned_footprint(footprint_or_name)
+        if footprint.name == name:
+            return footprint
+
+        footprint_index = next(
+            index
+            for index, candidate in enumerate(self.footprints)
+            if candidate is footprint
+        )
+        names = [
+            name if candidate is footprint else candidate.name
+            for candidate in self.footprints
+        ]
+        _plan_pcblib_storage_names(names, self._unavailable_source_roots())
+
+        candidate = copy.copy(self)
+        candidate.footprints = copy.deepcopy(self.footprints)
+        candidate._source_streams = dict(self._source_streams)
+        candidate._source_storages = tuple(self._source_storages)
+        candidate._source_footprint_keys = tuple(self._source_footprint_keys)
+        candidate._apply_parsed_footprint_rename(footprint_index, name)
+        candidate._stage_pcblib_writer(preflight_container=True)
+        candidate_footprint = candidate.footprints[footprint_index]
+
+        footprint.name = candidate_footprint.name
+        footprint.parameters["PATTERN"] = candidate_footprint.parameters["PATTERN"]
+        footprint.raw_parameters = candidate_footprint.raw_parameters
+        footprint._parameter_signature = candidate_footprint._parameter_signature
+        for live, staged in zip(self.footprints, candidate.footprints, strict=True):
+            live._ole_storage_name = staged._ole_storage_name
+        self.raw_library_data = candidate.raw_library_data
+        self.raw_component_params_toc_data = candidate.raw_component_params_toc_data
+        self.raw_component_params_toc_header = candidate.raw_component_params_toc_header
+        self.raw_section_keys = candidate.raw_section_keys
+        return footprint
+
+    def _rename_authored_footprint(
+        self,
+        footprint_or_name: AltiumPcbFootprint | str,
+        name: str,
+    ) -> AltiumPcbFootprint:
+        builder = self._authoring_builder
+        if builder is None:
+            raise RuntimeError("PcbLib authoring builder is not initialized")
+        footprint = builder._resolve_owned_footprint(footprint_or_name)
+        if footprint.name == name:
+            return footprint
+
+        self._validate_source_component_params_toc()
+        footprint_index = next(
+            index
+            for index, spec in enumerate(builder._footprints)
+            if spec.footprint is footprint
+        )
+        candidate_builder = copy.deepcopy(builder)
+        candidate_footprint = candidate_builder._footprints[footprint_index].footprint
+        candidate_builder._apply_footprint_name(candidate_footprint, name)
+        candidate_library = candidate_builder.build()
+        self._apply_authored_source_storage_plan(candidate_library)
+        candidate_owner = copy.copy(self)
+        candidate_owner._sync_from_authored_library(candidate_library)
+        candidate_owner._stage_pcblib_writer(preflight_container=True)
+
+        builder._apply_footprint_name(footprint, name)
+        return footprint
+
+    def _resolve_owned_footprint(
+        self,
+        footprint_or_name: AltiumPcbFootprint | str,
+    ) -> AltiumPcbFootprint:
+        if isinstance(footprint_or_name, str):
+            footprint = self.find_footprint(footprint_or_name)
+            if footprint is None:
+                raise ValueError(
+                    f"footprint {footprint_or_name!r} is not owned by this library"
+                )
+            return footprint
+        if not isinstance(footprint_or_name, AltiumPcbFootprint) or not any(
+            candidate is footprint_or_name for candidate in self.footprints
+        ):
+            raise ValueError("footprint is not owned by this library")
+        return footprint_or_name
+
+    def _apply_parsed_footprint_rename(self, footprint_index: int, name: str) -> None:
+        footprint = self.footprints[footprint_index]
+        footprint.name = name
+        footprint.parameters["PATTERN"] = name
+        names = [candidate.name for candidate in self.footprints]
+        storage_names = _plan_pcblib_storage_names(names)
+        for candidate, storage_name in zip(
+            self.footprints,
+            storage_names,
+            strict=True,
+        ):
+            candidate._ole_storage_name = storage_name
+
+        from .altium_pcblib_builder import PcbLibLibraryData
+
+        library_data = PcbLibLibraryData.from_bytes(self._get_library_data_header())
+        self.raw_library_data = library_data.build_stream(names)
+        self.raw_component_params_toc_data = self._renamed_component_params_toc(
+            footprint_index,
+            name,
+        )
+        self.raw_section_keys = self._section_keys_for_storage_plan(
+            names,
+            storage_names,
+        )
+
+    def _unavailable_source_roots(self) -> tuple[str, ...]:
+        source_footprint_roots = {
+            name.casefold() for name in self._source_footprint_keys
+        }
+        roots = {
+            path.split("/", 1)[0]
+            for path in (*self._source_streams, *self._source_storages)
+            if path.split("/", 1)[0].casefold() not in source_footprint_roots
+        }
+        return tuple(sorted(roots, key=str.casefold))
+
+    def _apply_authored_source_storage_plan(
+        self,
+        authored: "AltiumPcbLib",
+    ) -> None:
+        names = [footprint.name for footprint in authored.footprints]
+        storage_names = _plan_pcblib_storage_names(
+            names,
+            self._unavailable_source_roots(),
+        )
+        for footprint, storage_name in zip(
+            authored.footprints,
+            storage_names,
+            strict=True,
+        ):
+            footprint._ole_storage_name = storage_name
+        authored.raw_section_keys = self._section_keys_for_storage_plan(
+            names,
+            storage_names,
+        )
+
+    def _renamed_component_params_toc(
+        self,
+        footprint_index: int,
+        name: str,
+    ) -> bytes | None:
+        if self.raw_component_params_toc_data is None:
+            if self.raw_component_params_toc_header is not None:
+                raise ValueError("PcbLib ComponentParamsTOC is missing its data stream")
+            return None
+        if self.raw_component_params_toc_header is None:
+            raise ValueError("PcbLib ComponentParamsTOC is missing its header stream")
+        toc = PcbLibComponentParamsToc.from_bytes(self.raw_component_params_toc_data)
+        if len(toc.entries) != len(self.footprints):
+            raise ValueError(
+                "PcbLib ComponentParamsTOC count does not match footprints"
+            )
+        entries = list(toc.entries)
+        entries[footprint_index] = replace(entries[footprint_index], name=name)
+        return PcbLibComponentParamsToc(entries=tuple(entries)).to_bytes()
+
+    def _validate_source_component_params_toc(self) -> None:
+        if not self._source_footprint_keys:
+            return
+        if self.raw_component_params_toc_data is None:
+            if self.raw_component_params_toc_header is not None:
+                raise ValueError("PcbLib ComponentParamsTOC is missing its data stream")
+            return
+        if self.raw_component_params_toc_header is None:
+            raise ValueError("PcbLib ComponentParamsTOC is missing its header stream")
+        toc = PcbLibComponentParamsToc.from_bytes(self.raw_component_params_toc_data)
+        if len(toc.entries) != len(self._source_footprint_keys):
+            raise ValueError(
+                "PcbLib ComponentParamsTOC count does not match footprints"
+            )
+
+    @staticmethod
+    def _section_keys_for_storage_plan(
+        names: Sequence[str],
+        storage_names: Sequence[str],
+    ) -> bytes | None:
+        entries = tuple(
+            PcbLibSectionKeyEntry(full_name=name, ole_key=storage_name)
+            for name, storage_name in zip(names, storage_names, strict=True)
+            if name != storage_name
+        )
+        return PcbLibSectionKeys(entries=entries).to_bytes() if entries else None
 
     def add_existing_footprint(
         self,
@@ -3305,6 +3577,7 @@ class AltiumPcbLib:
                     exc,
                 )
         footprint._ole_storage_name = ole_name
+        footprint._source_storage_name = ole_name
 
     @classmethod
     def _parse_footprints(
@@ -3417,13 +3690,21 @@ class AltiumPcbLib:
         """
         pcblib = cls()
         pcblib.filepath = Path(filename)
-        with AltiumOleFile(bytes(data)) as ole:
+        with AltiumOleFile(
+            bytes(data),
+            max_file_bytes=pcblib._read_limits.max_container_bytes,
+            max_directory_entries=pcblib._read_limits.max_directory_entries,
+        ) as ole:
             cls._load_raw_library_streams(ole, pcblib)
             section_key_map = cls._load_section_key_map(ole, pcblib, debug)
             footprint_names = cls._load_library_data_and_footprint_names(ole, pcblib)
             cls._parse_footprints(ole, pcblib, footprint_names, section_key_map, debug)
             cls._load_3d_models(ole, pcblib)
             pcblib._sync_footprint_svg_layer_cache()
+            pcblib._source_footprint_keys = tuple(
+                footprint._source_storage_name for footprint in pcblib.footprints
+            )
+            pcblib._snapshot_source_container(ole)
 
         log.info(f"Parsed byte-backed PcbLib: {len(pcblib.footprints)} footprint(s)")
         return pcblib
@@ -3435,15 +3716,73 @@ class AltiumPcbLib:
 
         log.info(f"Parsing PcbLib file: {filepath.name}")
         cls = type(self)
-        with AltiumOleFile(str(filepath)) as ole:
+        with AltiumOleFile(
+            str(filepath),
+            max_file_bytes=self._read_limits.max_container_bytes,
+            max_directory_entries=self._read_limits.max_directory_entries,
+        ) as ole:
             cls._load_raw_library_streams(ole, self)
             section_key_map = cls._load_section_key_map(ole, self, debug)
             footprint_names = cls._load_library_data_and_footprint_names(ole, self)
             cls._parse_footprints(ole, self, footprint_names, section_key_map, debug)
             cls._load_3d_models(ole, self)
             self._sync_footprint_svg_layer_cache()
+            self._source_footprint_keys = tuple(
+                footprint._source_storage_name for footprint in self.footprints
+            )
+            self._snapshot_source_container(ole)
 
         log.info(f"Parsed successfully: {len(self.footprints)} footprint(s)")
+
+    def _snapshot_source_container(self, ole: AltiumOleFile) -> None:
+        source_keys = {name.casefold() for name in self._source_footprint_keys}
+        stream_paths = ole.listdir(streams=True, storages=False)
+        storage_paths = ole.listdir(streams=False, storages=True)
+        self._validate_source_inventory(ole, stream_paths, storage_paths)
+        self._source_streams = {
+            joined: ole.openstream(path)
+            for path in stream_paths
+            if not self._is_managed_source_path(
+                joined := "/".join(path),
+                source_keys,
+                storage=False,
+            )
+        }
+        self._source_storages = tuple(
+            joined
+            for path in storage_paths
+            if not self._is_managed_source_path(
+                joined := "/".join(path),
+                source_keys,
+                storage=True,
+            )
+        )
+
+    def _validate_source_inventory(
+        self,
+        ole: AltiumOleFile,
+        stream_paths: Sequence[list[str]],
+        storage_paths: Sequence[list[str]],
+    ) -> None:
+        if len(stream_paths) > self._read_limits.max_streams:
+            raise ValueError("PcbLib stream count exceeds the configured limit")
+        if (
+            len(stream_paths) + len(storage_paths)
+            > self._read_limits.max_directory_entries
+        ):
+            raise ValueError(
+                "PcbLib directory entry count exceeds the configured limit"
+            )
+        if any(
+            len(path) > self._read_limits.max_directory_depth
+            for path in (*stream_paths, *storage_paths)
+        ):
+            raise ValueError("PcbLib directory depth exceeds the configured limit")
+        stream_sizes = [ole.get_size(path) for path in stream_paths]
+        if any(size > self._read_limits.max_stream_bytes for size in stream_sizes):
+            raise ValueError("PcbLib stream exceeds the configured byte limit")
+        if sum(stream_sizes) > self._read_limits.max_container_bytes:
+            raise ValueError("PcbLib aggregate streams exceed the configured limit")
 
     def filename(self) -> str:
         """
@@ -3507,15 +3846,244 @@ class AltiumPcbLib:
             output_path: Path to output .PcbLib file
             debug: Enable debug output
         """
-        writer = AltiumOleWriter()
-        self._write_file_level_streams(writer)
-        self._write_footprint_streams(writer)
-        self._write_file_trailer_streams(writer)
+        writer = self._stage_pcblib_writer()
         writer.write(output_path)
+        if output_path.stat().st_size > self._read_limits.max_container_bytes:
+            raise ValueError("PcbLib output exceeds the configured byte limit")
+        self._source_footprint_keys = tuple(
+            footprint._ole_storage_name for footprint in self.footprints
+        )
+        source_keys = {name.casefold() for name in self._source_footprint_keys}
+        self._source_streams = {
+            path: payload
+            for path, payload in writer._streams.items()
+            if not self._is_managed_source_path(path, source_keys, storage=False)
+        }
+        self._source_storages = tuple(
+            sorted(
+                storage
+                for storage in writer._storages
+                if not self._is_managed_source_path(
+                    storage,
+                    source_keys,
+                    storage=True,
+                )
+            )
+        )
+        for footprint in self.footprints:
+            footprint._source_storage_name = footprint._ole_storage_name
         self.filepath = Path(output_path)
 
         if debug:
             log.info(f"Wrote PcbLib to {output_path}")
+
+    def _stage_pcblib_writer(
+        self,
+        *,
+        preflight_container: bool = False,
+    ) -> AltiumOleWriter:
+        writer = AltiumOleWriter()
+        self._copy_source_container(writer)
+        self._write_file_level_streams(writer)
+        self._write_footprint_streams(writer)
+        self._write_file_trailer_streams(writer)
+        self._validate_staged_pcblib(writer)
+        if (
+            preflight_container
+            and len(writer._to_bytes()) > self._read_limits.max_container_bytes
+        ):
+            raise ValueError("PcbLib output exceeds the configured byte limit")
+        return writer
+
+    def _copy_source_container(self, writer: AltiumOleWriter) -> None:
+        source_keys = {name.casefold() for name in self._source_footprint_keys}
+        storage_rebases = {
+            footprint._source_storage_name.casefold(): footprint._ole_storage_name
+            for footprint in self.footprints
+            if footprint._source_storage_name.casefold() in source_keys
+        }
+        live_source_keys = set(storage_rebases)
+        for storage in self._source_storages:
+            if self._is_managed_source_path(storage, source_keys, storage=True):
+                continue
+            if self._pcblib_source_path_removed(
+                storage,
+                source_keys,
+                live_source_keys,
+            ):
+                continue
+            writer.addEntry(
+                self._rebase_pcblib_source_path(storage, storage_rebases),
+                storage=True,
+            )
+        for path, payload in self._source_streams.items():
+            if self._is_managed_source_path(path, source_keys, storage=False):
+                continue
+            if self._pcblib_source_path_removed(path, source_keys, live_source_keys):
+                continue
+            writer.add_stream(
+                self._rebase_pcblib_source_path(path, storage_rebases),
+                payload,
+            )
+
+    def _is_managed_source_path(
+        self,
+        path: str,
+        source_keys: set[str],
+        *,
+        storage: bool,
+    ) -> bool:
+        folded = path.casefold()
+        if storage:
+            managed_storages = {
+                "fileheader",
+                "sectionkeys",
+                "library",
+                "library/header",
+                "library/data",
+                "library/embeddedfonts",
+                "library/models",
+                "library/models/header",
+                "library/models/data",
+                "library/modelsnoembed",
+                "library/modelsnoembed/header",
+                "library/modelsnoembed/data",
+                "library/textures",
+                "library/textures/header",
+                "library/textures/data",
+                "library/componentparamstoc",
+                "library/componentparamstoc/header",
+                "library/componentparamstoc/data",
+                "library/padvialibrary",
+                "library/padvialibrary/header",
+                "library/padvialibrary/data",
+                "library/layerkindmapping",
+                "library/layerkindmapping/header",
+                "library/layerkindmapping/data",
+                "fileversioninfo",
+                "fileversioninfo/header",
+                "fileversioninfo/data",
+            }
+            top, separator, relative = folded.partition("/")
+            if top in source_keys and separator:
+                managed_storages.update(
+                    f"{top}/{name}"
+                    for name in (
+                        "data",
+                        "header",
+                        "parameters",
+                        "primitiveparameters",
+                        "widestrings",
+                        "primitiveguids",
+                        "primitiveguids/header",
+                        "primitiveguids/data",
+                        "extendedprimitiveinformation",
+                        "extendedprimitiveinformation/header",
+                        "extendedprimitiveinformation/data",
+                        "uniqueidprimitiveinformation",
+                        "uniqueidprimitiveinformation/header",
+                        "uniqueidprimitiveinformation/data",
+                        "cornerradiuschamfer",
+                        "viastructuremanager",
+                        "viastructures",
+                    )
+                )
+            return folded in managed_storages
+
+        managed_streams = {
+            "fileheader",
+            "library/header",
+            "library/data",
+            "library/embeddedfonts",
+            "library/models/header",
+            "library/models/data",
+            "library/modelsnoembed/header",
+            "library/modelsnoembed/data",
+            "library/textures/header",
+            "library/textures/data",
+            "library/componentparamstoc/header",
+            "library/componentparamstoc/data",
+            "library/padvialibrary/header",
+            "library/padvialibrary/data",
+            "library/layerkindmapping/header",
+            "library/layerkindmapping/data",
+            "sectionkeys",
+            "fileversioninfo/header",
+            "fileversioninfo/data",
+        }
+        managed_streams.update(
+            f"library/models/{model_num}" for model_num in self.raw_models
+        )
+        top, separator, relative = folded.partition("/")
+        if top in source_keys and separator:
+            managed_relative = {
+                "data",
+                "header",
+                "parameters",
+                "primitiveparameters",
+                "widestrings",
+                "primitiveguids/header",
+                "primitiveguids/data",
+                "extendedprimitiveinformation/header",
+                "extendedprimitiveinformation/data",
+                "uniqueidprimitiveinformation/header",
+                "uniqueidprimitiveinformation/data",
+                "cornerradiuschamfer",
+                "viastructuremanager",
+                "viastructures",
+            }
+            return relative in managed_relative
+        return folded in managed_streams
+
+    @staticmethod
+    def _pcblib_source_path_removed(
+        path: str,
+        source_keys: set[str],
+        live_source_keys: set[str],
+    ) -> bool:
+        top = path.split("/", 1)[0].casefold()
+        return top in source_keys and top not in live_source_keys
+
+    @staticmethod
+    def _rebase_pcblib_source_path(
+        path: str,
+        storage_rebases: Mapping[str, str],
+    ) -> str:
+        top, separator, relative = path.partition("/")
+        rebased_top = storage_rebases.get(top.casefold())
+        if rebased_top is None:
+            return path
+        return f"{rebased_top}{separator}{relative}" if separator else rebased_top
+
+    def _validate_staged_pcblib(self, writer: AltiumOleWriter) -> None:
+        if len(writer._streams) > self._read_limits.max_streams:
+            raise ValueError("PcbLib stream count exceeds the configured limit")
+        if (
+            len(writer._streams) + len(writer._storages)
+            > self._read_limits.max_directory_entries
+        ):
+            raise ValueError(
+                "PcbLib directory entry count exceeds the configured limit"
+            )
+        aggregate_bytes = 0
+        entries_by_fold: dict[str, str] = {}
+        for path, payload in writer._streams.items():
+            folded = path.casefold()
+            if folded in entries_by_fold:
+                raise ValueError("PcbLib output paths collide case-insensitively")
+            entries_by_fold[folded] = "stream"
+            if len(path.split("/")) > self._read_limits.max_directory_depth:
+                raise ValueError("PcbLib directory depth exceeds the configured limit")
+            if len(payload) > self._read_limits.max_stream_bytes:
+                raise ValueError("PcbLib stream exceeds the configured byte limit")
+            aggregate_bytes += len(payload)
+        for path in writer._storages:
+            folded = path.casefold()
+            if folded in entries_by_fold:
+                raise ValueError("PcbLib output stream and storage paths collide")
+            entries_by_fold[folded] = "storage"
+        if aggregate_bytes > self._read_limits.max_container_bytes:
+            raise ValueError("PcbLib aggregate streams exceed the configured limit")
 
     def _write_file_level_streams(self, writer: AltiumOleWriter) -> None:
         self._add_optional_stream(writer, "FileHeader", self.raw_file_header)
@@ -3730,7 +4298,9 @@ class AltiumPcbLib:
             debug: Enable serialization debug logging.
         """
         if self._authoring_builder is not None:
-            self._sync_from_authored_library(self._authoring_builder.build())
+            authored = self._authoring_builder.build()
+            self._apply_authored_source_storage_plan(authored)
+            self._sync_from_authored_library(authored)
         self._write_pcblib(output_path=Path(filepath), debug=debug)
 
     def save_subset(

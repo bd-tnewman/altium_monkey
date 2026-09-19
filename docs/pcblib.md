@@ -36,6 +36,14 @@ footprints. `AltiumPcbFootprint` owns its primitive lists:
 `footprint.pads`, `footprint.tracks`, `footprint.arcs`, `footprint.regions`,
 `footprint.texts`, `footprint.vias`, and `footprint.component_bodies`.
 
+Rename a library-owned footprint with
+`pcblib.rename_footprint(footprint_or_name, name)`. String selection is exact
+and case-sensitive. The method returns the same owned footprint, updates the
+catalog, parameters, section keys, and storage identity together, and preserves
+known identifiers plus opaque per-footprint streams. Rename targets are
+printable ASCII and at most 255 bytes; unsupported names and collisions are
+rejected without changing the library.
+
 Attach a footprint to a library before adding primitives so the library can
 manage model streams and authoring metadata:
 

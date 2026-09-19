@@ -6,9 +6,9 @@ from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
-from .altium_dotnet_ordinal import (
-    dotnet_ordinal_ignore_case_key,
-    dotnet_ordinal_ignore_case_sort_key,
+from .altium_text_semantics import (
+    altium_name_key,
+    altium_name_sort_key,
 )
 from .altium_netlist_single_sheet import _parse_bus_range
 
@@ -132,7 +132,7 @@ def _merge_project_definition_groups(
             if current is None:
                 current = (type_name, [])
                 project[key] = current
-            elif _dotnet_ordinal_sort_key(type_name) > _dotnet_ordinal_sort_key(
+            elif _utf16_ordinal_sort_key(type_name) > _utf16_ordinal_sort_key(
                 current[0]
             ):
                 current = (type_name, current[1])
@@ -151,16 +151,16 @@ def _merge_project_entries(
     project: dict[str, tuple[str, list[HarnessDefinitionEntry]]],
 ) -> None:
     for entry in entries:
-        definition_key = dotnet_ordinal_ignore_case_key(_entry_definition(entry))
+        definition_key = altium_name_key(_entry_definition(entry))
         if any(
-            dotnet_ordinal_ignore_case_key(_entry_definition(current)) == definition_key
+            altium_name_key(_entry_definition(current)) == definition_key
             for current in target
         ):
             _try_update_same_list_entry(target, entry)
             continue
         if entry.nested_type and _project_cross_reference_exists(
             owner_key,
-            dotnet_ordinal_ignore_case_key(entry.nested_type),
+            altium_name_key(entry.nested_type),
             project,
             frozenset(),
         ):
@@ -186,7 +186,7 @@ def _project_cross_reference_exists(
         entry.nested_type
         and _project_cross_reference_exists(
             owner_key,
-            dotnet_ordinal_ignore_case_key(entry.nested_type),
+            altium_name_key(entry.nested_type),
             project,
             next_seen,
         )
@@ -206,9 +206,7 @@ def _merge_candidates(
                 is_locked=candidate.is_locked,
                 source_identity=candidate.source_identity,
             )
-            grouped[dotnet_ordinal_ignore_case_key(candidate.type_name)].append(
-                normalized
-            )
+            grouped[altium_name_key(candidate.type_name)].append(normalized)
     result: dict[str, tuple[str, tuple[HarnessDefinitionEntry, ...]]] = {}
     for key, group in grouped.items():
         locked = [candidate for candidate in group if candidate.is_locked]
@@ -222,7 +220,7 @@ def _merge_candidate_group(
 ) -> tuple[str, tuple[HarnessDefinitionEntry, ...]]:
     type_name = max(
         (candidate.type_name for candidate in candidates),
-        key=_dotnet_ordinal_sort_key,
+        key=_utf16_ordinal_sort_key,
     )
     if _candidate_entry_orders_match(candidates):
         entries = list(candidates[0].entries)
@@ -239,7 +237,7 @@ def _dedupe_candidate_entries(
     rows: list[HarnessDefinitionEntry] = []
     seen: set[str] = set()
     for entry in entries:
-        key = dotnet_ordinal_ignore_case_key(_entry_definition(entry))
+        key = altium_name_key(_entry_definition(entry))
         if not entry.name or key in seen:
             continue
         seen.add(key)
@@ -252,12 +250,12 @@ def _try_update_same_list_entry(
     candidate: HarnessDefinitionEntry,
 ) -> None:
     candidate_definition = _entry_definition(candidate)
-    candidate_key = dotnet_ordinal_ignore_case_key(candidate_definition)
+    candidate_key = altium_name_key(candidate_definition)
     for index, current in enumerate(entries):
         current_definition = _entry_definition(current)
-        if dotnet_ordinal_ignore_case_key(current_definition) != candidate_key:
+        if altium_name_key(current_definition) != candidate_key:
             continue
-        if _dotnet_ordinal_sort_key(candidate_definition) > _dotnet_ordinal_sort_key(
+        if _utf16_ordinal_sort_key(candidate_definition) > _utf16_ordinal_sort_key(
             current_definition
         ):
             entries.pop(index)
@@ -271,15 +269,13 @@ def _merge_conflicting_entries(
     winners: dict[str, HarnessDefinitionEntry] = {}
     for candidate in candidates:
         for entry in candidate.entries:
-            key = dotnet_ordinal_ignore_case_key(entry.name)
+            key = altium_name_key(entry.name)
             current = winners.get(key)
             if current is None or _conflicting_entry_rank(
                 entry
             ) > _conflicting_entry_rank(current):
                 winners[key] = entry
-    ordered = tuple(
-        winners[key] for key in sorted(winners, key=dotnet_ordinal_ignore_case_sort_key)
-    )
+    ordered = tuple(winners[key] for key in sorted(winners, key=altium_name_sort_key))
     return ordered
 
 
@@ -288,16 +284,16 @@ def _candidate_entry_orders_match(
 ) -> bool:
     expected = tuple(
         (
-            dotnet_ordinal_ignore_case_key(entry.name),
-            dotnet_ordinal_ignore_case_key(entry.nested_type),
+            altium_name_key(entry.name),
+            altium_name_key(entry.nested_type),
         )
         for entry in candidates[0].entries
     )
     return all(
         tuple(
             (
-                dotnet_ordinal_ignore_case_key(entry.name),
-                dotnet_ordinal_ignore_case_key(entry.nested_type),
+                altium_name_key(entry.name),
+                altium_name_key(entry.nested_type),
             )
             for entry in candidate.entries
         )
@@ -307,7 +303,7 @@ def _candidate_entry_orders_match(
 
 
 def _entry_spelling_rank(entry: HarnessDefinitionEntry) -> bytes:
-    return _dotnet_ordinal_sort_key(_entry_definition(entry))
+    return _utf16_ordinal_sort_key(_entry_definition(entry))
 
 
 def _entry_definition(entry: HarnessDefinitionEntry) -> str:
@@ -321,8 +317,8 @@ def _conflicting_entry_rank(
 ) -> tuple[bool, bytes, bytes]:
     return (
         bool(entry.nested_type),
-        _dotnet_ordinal_sort_key(entry.nested_type),
-        _dotnet_ordinal_sort_key(entry.name),
+        _utf16_ordinal_sort_key(entry.nested_type),
+        _utf16_ordinal_sort_key(entry.name),
     )
 
 
@@ -372,7 +368,7 @@ def _append_unwound_members(
             raise ValueError("harness definition depth limit exceeded")
         if entry.nested_type:
             _append_unwound_members(
-                dotnet_ordinal_ignore_case_key(entry.nested_type),
+                altium_name_key(entry.nested_type),
                 definitions,
                 path=next_path,
                 active_types=next_active,
@@ -422,5 +418,5 @@ def _append_member(
     rows.append(member)
 
 
-def _dotnet_ordinal_sort_key(value: str) -> bytes:
+def _utf16_ordinal_sort_key(value: str) -> bytes:
     return value.encode("utf-16-be", errors="surrogatepass")

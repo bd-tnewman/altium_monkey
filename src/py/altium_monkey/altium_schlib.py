@@ -699,6 +699,7 @@ class AltiumSymbol(_ManagedUniqueIdOwner):
         self._additional_membership_dirty = False
         self._uses_implicit_storage_mapping = False
         self._header_display_name: str | None = None
+        self._source_storage_name = name
 
     def _bind_to_schematic_library(self, schlib: "AltiumSchLib") -> None:
         """
@@ -2760,7 +2761,7 @@ class AltiumSymbol(_ManagedUniqueIdOwner):
     @staticmethod
     def _managed_component_sort_key(source: object) -> tuple[int, int]:
         """Model the component override's object, field, and implementation phases."""
-        from .altium_dotnet_ordinal import dotnet_ordinal_ignore_case_key
+        from .altium_text_semantics import altium_name_key
 
         binary_high, binary_code = AltiumSymbol._managed_sibling_sort_key(source)
         if isinstance(source, AltiumSchImplementationList):
@@ -2771,8 +2772,7 @@ class AltiumSymbol(_ManagedUniqueIdOwner):
             if isinstance(source, AltiumSchDesignator):
                 return 1, 0
             if isinstance(source, AltiumSchParameter) and (
-                dotnet_ordinal_ignore_case_key(source.name)
-                == dotnet_ordinal_ignore_case_key("Comment")
+                altium_name_key(source.name) == altium_name_key("Comment")
             ):
                 return 1, 1
         return 0, 0
@@ -3261,7 +3261,7 @@ class AltiumSymbol(_ManagedUniqueIdOwner):
         source: object, parent: object | None
     ) -> bool:
         """Classify membership with a reconstructed managed owner when needed."""
-        from .altium_dotnet_ordinal import dotnet_ordinal_ignore_case_key
+        from .altium_text_semantics import altium_name_key
 
         membership = getattr(source, "_managed_container_membership", None)
         if membership in {"field", "object_list"}:
@@ -3287,16 +3287,13 @@ class AltiumSymbol(_ManagedUniqueIdOwner):
         if parent_type == SchRecordType.RTF_LINK and isinstance(
             source, AltiumSchParameter
         ):
-            return dotnet_ordinal_ignore_case_key(
-                source.name
-            ) != dotnet_ordinal_ignore_case_key("Comment")
+            return altium_name_key(source.name) != altium_name_key("Comment")
         if parent is not None:
             return True
         if isinstance(source, AltiumSchDesignator):
             return False
         if isinstance(source, AltiumSchParameter) and (
-            dotnet_ordinal_ignore_case_key(source.name)
-            == dotnet_ordinal_ignore_case_key("Comment")
+            altium_name_key(source.name) == altium_name_key("Comment")
         ):
             return False
         return getattr(source, "record_type", None) not in {
@@ -5295,7 +5292,16 @@ class AltiumSchLib(JsonApplyMixin):
                 "duplicate", "live symbol storage names collide case-insensitively"
             )
         source_keys = {name.casefold() for name in self._source_symbol_keys}
-        self._copy_source_entries(ole_writer, source_keys, live_keys)
+        storage_rebases = {
+            symbol._source_storage_name.casefold(): symbol.name
+            for symbol in self.symbols
+            if symbol._source_storage_name.casefold() in source_keys
+        }
+        self._copy_source_entries(
+            ole_writer,
+            source_keys,
+            storage_rebases,
+        )
         if not sync_pin_text_data:
             return original_pin_aux_streams
         for symbol in self.symbols:
@@ -5310,15 +5316,33 @@ class AltiumSchLib(JsonApplyMixin):
         self,
         ole_writer: AltiumOleWriter,
         source_keys: set[str],
-        live_keys: set[str],
+        storage_rebases: dict[str, str],
     ) -> None:
+        preserved_source_keys = set(storage_rebases)
         for storage in self._source_storages:
-            if not self._belongs_to_removed_symbol(storage, source_keys, live_keys):
-                ole_writer.addEntry(storage, storage=True)
+            if not self._belongs_to_removed_symbol(
+                storage, source_keys, preserved_source_keys
+            ):
+                ole_writer.addEntry(
+                    self._rebase_symbol_path(storage, storage_rebases),
+                    storage=True,
+                )
         for path, payload in self._source_streams.items():
-            if self._belongs_to_removed_symbol(path, source_keys, live_keys):
+            if self._belongs_to_removed_symbol(
+                path, source_keys, preserved_source_keys
+            ):
                 continue
-            ole_writer.add_stream(path, payload)
+            ole_writer.add_stream(
+                self._rebase_symbol_path(path, storage_rebases), payload
+            )
+
+    @staticmethod
+    def _rebase_symbol_path(path: str, storage_rebases: dict[str, str]) -> str:
+        top, separator, relative = path.partition("/")
+        rebased_top = storage_rebases.get(top.casefold())
+        if rebased_top is None:
+            return path
+        return f"{rebased_top}{separator}{relative}" if separator else rebased_top
 
     @staticmethod
     def _belongs_to_removed_symbol(
@@ -5717,6 +5741,18 @@ class AltiumSchLib(JsonApplyMixin):
         streams = ole_writer._streams
         storages = ole_writer._storages
         self._build_stream_path_index(streams)
+        entries_by_fold = {path.casefold(): "stream" for path in streams}
+        if len(entries_by_fold) != len(streams):
+            raise SchLibContainerError(
+                "duplicate", "output stream paths collide case-insensitively"
+            )
+        for path in storages:
+            folded = path.casefold()
+            if folded in entries_by_fold:
+                raise SchLibContainerError(
+                    "duplicate", "output stream and storage paths collide"
+                )
+            entries_by_fold[folded] = "storage"
         if len(streams) > limits.max_streams_per_container:
             raise SchLibContainerError("limit", "output has too many streams")
         directory_entries = 1 + len(streams) + len(storages)
@@ -5860,6 +5896,7 @@ class AltiumSchLib(JsonApplyMixin):
         self._header_table_coherent = True
         self._parsed_symbol_signature = self._symbol_table_signature()
         for symbol, staged_symbol in zip(self.symbols, staged.symbols, strict=True):
+            symbol._source_storage_name = symbol.name
             symbol.raw_records = staged_symbol.raw_records
             if symbol.raw_records:
                 symbol.component_record = symbol.raw_records[0]
@@ -6080,6 +6117,122 @@ class AltiumSchLib(JsonApplyMixin):
         symbol._set_unique_id_locked(True)
         self._symbols.append(symbol)
         return symbol
+
+    def rename_symbol(
+        self,
+        symbol_or_name: AltiumSymbol | str,
+        storage_name: str,
+        *,
+        original_name: str | None = None,
+    ) -> AltiumSymbol:
+        """Rename one owned symbol and its complete SchLib storage subtree."""
+        symbol = self._resolve_owned_symbol(symbol_or_name)
+        if symbol.name == storage_name and original_name is None:
+            return symbol
+        resolved_original_name = (
+            str(symbol.original_name or symbol.name)
+            if original_name is None
+            else original_name
+        )
+        if (
+            symbol.name == storage_name
+            and str(symbol.original_name) == resolved_original_name
+        ):
+            return symbol
+
+        self._validate_symbol_rename(symbol, storage_name, resolved_original_name)
+        symbol_index = next(
+            index
+            for index, candidate in enumerate(self._symbols)
+            if candidate is symbol
+        )
+        candidate = deepcopy(self)
+        candidate_symbol = candidate._symbols[symbol_index]
+        candidate._apply_symbol_rename(
+            candidate_symbol,
+            storage_name,
+            resolved_original_name,
+        )
+        candidate_writer = candidate._stage_schlib_writer(
+            debug=False,
+            sync_pin_text_data=False,
+            minimal=False,
+        )
+        if (
+            len(candidate_writer._to_bytes())
+            > candidate._read_limits.max_container_bytes
+        ):
+            raise SchLibContainerError(
+                "limit", "output OLE container exceeds container byte limit"
+            )
+        self._apply_symbol_rename(symbol, storage_name, resolved_original_name)
+        return symbol
+
+    def _resolve_owned_symbol(self, symbol_or_name: AltiumSymbol | str) -> AltiumSymbol:
+        if isinstance(symbol_or_name, str):
+            symbol = self.get_symbol(symbol_or_name)
+            if symbol is None:
+                raise ValueError(
+                    f"symbol {symbol_or_name!r} is not owned by this library"
+                )
+            return symbol
+        if not isinstance(symbol_or_name, AltiumSymbol) or not any(
+            candidate is symbol_or_name for candidate in self._symbols
+        ):
+            raise ValueError("symbol is not owned by this library")
+        return symbol_or_name
+
+    def _validate_symbol_rename(
+        self,
+        symbol: AltiumSymbol,
+        storage_name: str,
+        original_name: str,
+    ) -> None:
+        self._validate_new_storage_name(storage_name)
+        if not isinstance(original_name, str) or not original_name:
+            raise ValueError("original_name must be a non-empty string")
+        if any(
+            candidate is not symbol
+            and candidate.name.casefold() == storage_name.casefold()
+            for candidate in self.symbols
+        ):
+            raise ValueError(
+                f"symbol name {storage_name!r} already exists in this library"
+            )
+        self._validate_symbol_storage_root_available(storage_name)
+        if any(
+            candidate is not symbol
+            and str(candidate.original_name or candidate.name).casefold()
+            == original_name.casefold()
+            for candidate in self.symbols
+        ):
+            raise ValueError(
+                f"symbol library reference {original_name!r} already exists"
+            )
+
+    def _validate_symbol_storage_root_available(self, storage_name: str) -> None:
+        folded_storage_name = storage_name.casefold()
+        managed_roots = {"fileheader", "libadditional", "sectionkeys", "storage"}
+        source_symbol_roots = {name.casefold() for name in self._source_symbol_keys}
+        source_roots = {
+            path.split("/", 1)[0].casefold()
+            for path in (*self._source_streams, *self._source_storages)
+        }
+        unavailable_roots = managed_roots | (source_roots - source_symbol_roots)
+        if folded_storage_name in unavailable_roots:
+            raise ValueError(
+                f"symbol storage name {storage_name!r} collides with a library root"
+            )
+
+    @staticmethod
+    def _apply_symbol_rename(
+        symbol: AltiumSymbol,
+        storage_name: str,
+        original_name: str,
+    ) -> None:
+        symbol.name = storage_name
+        symbol._header_display_name = original_name
+        symbol._set_component_identity(original_name)
 
     def _validate_new_symbol_names(self, name: str, original_name: str) -> None:
         self._validate_new_storage_name(name)
@@ -6609,7 +6762,7 @@ class AltiumSchLib(JsonApplyMixin):
             _COMPONENT_BOUND_PARAMETER_NAMES,
             _component_bound_field_role,
         )
-        from .altium_dotnet_ordinal import dotnet_ordinal_ignore_case_key
+        from .altium_text_semantics import altium_name_key
         from .altium_record_sch__parameter import AltiumSchImageParameter
 
         if (
@@ -6620,10 +6773,7 @@ class AltiumSchLib(JsonApplyMixin):
             return False
         if _component_bound_field_role(source) is not None:
             return False
-        if (
-            dotnet_ordinal_ignore_case_key(source.name)
-            in _COMPONENT_BOUND_PARAMETER_NAMES
-        ):
+        if altium_name_key(source.name) in _COMPONENT_BOUND_PARAMETER_NAMES:
             return False
         parent = parents.get(id(source))
         if isinstance(parent, AltiumSchImplParams):
@@ -6953,7 +7103,7 @@ class AltiumSchLib(JsonApplyMixin):
         last_field_by_owner_role: dict[tuple[int, SchRecordType], int],
         map_definer_keys_by_owner: set[tuple[int, str]],
     ) -> None:
-        from .altium_dotnet_ordinal import dotnet_ordinal_ignore_case_key
+        from .altium_text_semantics import altium_name_key
         from ._sch_source_projection import _record_import_ignores_source
 
         if (
@@ -6975,9 +7125,7 @@ class AltiumSchLib(JsonApplyMixin):
         elif record_type == SchRecordType.MAP_DEFINER:
             key = (
                 owner_key,
-                dotnet_ordinal_ignore_case_key(
-                    str(getattr(source, "designator_interface", ""))
-                ),
+                altium_name_key(str(getattr(source, "designator_interface", ""))),
             )
             if key in map_definer_keys_by_owner:
                 unattached.add(id(source))

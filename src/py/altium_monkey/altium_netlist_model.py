@@ -16,6 +16,22 @@ NETLIST_JSON_SCHEMA = "altium_monkey.netlist.b0"
 JSON_GENERATOR = "altium_monkey"
 
 
+class AmbiguousNetNameError(LookupError):
+    """A net name or alias identifies more than one net in the netlist.
+
+    Bare source-local names (for example a channel sheet's local label) may
+    remain as scoped provenance aliases on several compiled nets at once.
+    Strict lookup refuses to guess between them and lists the candidate
+    canonical net names for disambiguation.
+    """
+
+    def __init__(self, name: str, candidate_names: list[str]) -> None:
+        self.name = name
+        self.candidate_names = candidate_names
+        joined = ", ".join(candidate_names)
+        super().__init__(f"net name {name!r} is ambiguous; candidates: {joined}")
+
+
 @dataclass(frozen=True, slots=True)
 class NetlistSourcePage:
     """Correlated physical-page and logical-source identity."""
@@ -654,9 +670,10 @@ class Net:
     source_sheets: list[str] = field(
         default_factory=list
     )  # Originating SchDoc filename(s)
-    aliases: list[str] = field(
-        default_factory=list
-    )  # Alternate names from cross-sheet merge
+    # Scoped source-name provenance: losing merge labels, harness-entry
+    # names, and bare channel-local names. The same alias may legitimately
+    # repeat on several nets; it is not a unique global lookup namespace.
+    aliases: list[str] = field(default_factory=list)
     hierarchy_paths: list[HierarchyPath] = field(
         default_factory=list
     )  # Hierarchy provenance
@@ -759,15 +776,17 @@ class PnpEntry:
     """
     Pick-and-place entry for a component.
 
-        Contains position/rotation from PcbDoc merged with parameters
-        from schematic. Used for manufacturing pick-and-place output. By
+        Contains position, rotation, and metadata projected from PcbDoc for
+        manufacturing pick-and-place output. ``AltiumDesign.to_pnp()`` can
+        optionally replace the metadata with compiled schematic facts. By
         default, ``center_x`` and ``center_y`` use the ``altium-pick-place``
-        mode from ``AltiumDesign.to_pnp()``: center of the bounding box of
-        component-owned pad anchor points, with component-origin fallback.
+        mode: center of the bounding box of component-owned pad anchor points,
+        with component-origin fallback.
 
         Attributes:
             designator: Component designator (e.g., "R1", "U1_2")
-            comment: Display value from schematic (e.g., "10k", "LM358")
+            comment: Display value from the selected metadata authority; PCB by
+                default (e.g., "10k", "LM358")
             layer: PCB layer - "top" or "bottom" (normalized)
             footprint: PCB footprint name
             center_x: Selected PnP position X in requested units (mm or mils)
@@ -961,6 +980,7 @@ class Netlist:
     components: list[NetlistComponent] = field(default_factory=list)
     schematic_hierarchy: dict = field(default_factory=dict)
     _net_lookup: dict[str, list[Net]] = field(default_factory=dict, repr=False)
+    _alias_lookup: dict[str, list[Net]] = field(default_factory=dict, repr=False)
     _uid_lookup: dict[str, Net] = field(default_factory=dict, repr=False)
     _component_lookup: dict[str, NetlistComponent] = field(
         default_factory=dict, repr=False
@@ -977,8 +997,11 @@ class Netlist:
         Rebuild lookup dictionaries.
         """
         self._net_lookup = defaultdict(list)
+        self._alias_lookup = defaultdict(list)
         for n in self.nets:
             self._net_lookup[n.name].append(n)
+            for alias in dict.fromkeys(n.aliases):
+                self._alias_lookup[alias].append(n)
         self._uid_lookup = {n.uid: n for n in self.nets}
         components_by_designator: dict[str, list[NetlistComponent]] = defaultdict(list)
         for component in self.components:
@@ -991,7 +1014,11 @@ class Netlist:
 
     def get_net(self, name: str) -> Net | None:
         """
-        Get the first net with the given name.
+        Get the first net with the given canonical name.
+
+        Consults canonical names only, and silently picks the first of the
+        documented flat-mode duplicates. Use resolve_net for strict lookup
+        that refuses ambiguity and also admits globally unique aliases.
         """
         nets = self._net_lookup.get(name, [])
         return nets[0] if nets else None
@@ -1000,10 +1027,38 @@ class Netlist:
         """
         Get all nets with given name (handles duplicate-named nets).
 
-                In flat mode, same-named net labels on different sheets can produce
-                separate nets with the same name.
+        In flat mode, same-named net labels on different sheets can produce
+        separate nets with the same name.
         """
         return list(self._net_lookup.get(name, []))
+
+    def get_nets_by_alias(self, name: str) -> list[Net]:
+        """
+        Get all nets carrying the given provenance alias, in net order.
+
+        Aliases are scoped source-name provenance (for example the bare
+        local label a channel net was compiled from) and may legitimately
+        repeat across nets, so this query returns every carrier.
+        """
+        return list(self._alias_lookup.get(name, []))
+
+    def resolve_net(self, name: str) -> Net | None:
+        """
+        Resolve a name to exactly one net, or fail explicitly.
+
+        Canonical net names are consulted first; provenance aliases are
+        usable for global lookup only when they identify a single net.
+        Returns None when the name is unknown and raises
+        AmbiguousNetNameError when the name maps to more than one net, so
+        many-net lookup ambiguity is always explicit, never a silent
+        first-match guess.
+        """
+        matches = self._net_lookup.get(name) or self._alias_lookup.get(name) or []
+        if not matches:
+            return None
+        if len(matches) > 1:
+            raise AmbiguousNetNameError(name, [net.name for net in matches])
+        return matches[0]
 
     def get_net_by_uid(self, uid: str) -> Net | None:
         """

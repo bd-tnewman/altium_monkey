@@ -25,7 +25,7 @@ from .altium_sch_interop_contract import (
 )
 
 if TYPE_CHECKING:
-    from .altium_netlist_model import NetlistSourcePage
+    from .altium_netlist_model import AmbiguousNetNameError, NetlistSourcePage
     from .altium_schematic_bom import SchematicBomPayload
     from .altium_schematic_contract import (
         SchematicContractError,
@@ -167,6 +167,10 @@ from .altium_ole import (
 )
 from .altium_intlib import (
     AltiumIntLib,
+    IntLibBuildResult,
+    IntLibBuildSource,
+    IntLibBuildWarning,
+    IntLibBuildWarningCode,
     IntLibComponent,
     IntLibExtractionResult,
     IntLibModel,
@@ -463,6 +467,10 @@ __all__ = [
     "FREESECT",
     # Integrated library utilities
     "AltiumIntLib",
+    "IntLibBuildResult",
+    "IntLibBuildSource",
+    "IntLibBuildWarning",
+    "IntLibBuildWarningCode",
     "IntLibComponent",
     "IntLibExtractionResult",
     "IntLibModel",
@@ -688,6 +696,7 @@ __all__ = [
     "AltiumDesign",
     "AltiumProjectCapabilityError",
     "AltiumProjectLoadMode",
+    "AmbiguousNetNameError",
     "NetlistSourcePage",
     "SchematicBomPayload",
     "SchematicContractError",
@@ -945,6 +954,7 @@ _LAZY_PUBLIC_EXPORTS = {
     "AltiumDesign": "altium_design",
     "AltiumProjectCapabilityError": "altium_design",
     "AltiumProjectLoadMode": "altium_design",
+    "AmbiguousNetNameError": "altium_netlist_model",
     "NetlistSourcePage": "altium_netlist_model",
     "SchematicBomPayload": "altium_schematic_bom",
     "SchematicContractError": "altium_schematic_contract",

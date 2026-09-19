@@ -8,9 +8,9 @@ from functools import cmp_to_key
 from typing import Protocol, TypeAlias
 
 from .altium_sch_enums import PinElectrical
-from .altium_dotnet_ordinal import dotnet_ordinal_ignore_case_key
+from .altium_text_semantics import altium_name_key
 from .altium_netlist_model import Net, PinType, UnionFind
-from .altium_managed_alpha_numeric import managed_alpha_numeric_compare
+from .altium_alpha_numeric import altium_alpha_numeric_compare
 from .altium_prjpcb import NetIdentifierScope
 
 
@@ -228,10 +228,10 @@ def _evaluate_altium_expression(
             while j < expr_len and (expr[j].isalnum() or expr[j] == "_"):
                 j += 1
             ident = expr[i:j]
-            ident_key = dotnet_ordinal_ignore_case_key(ident)
+            ident_key = altium_name_key(ident)
             found = False
             for key, value in params.items():
-                if dotnet_ordinal_ignore_case_key(key) == ident_key:
+                if altium_name_key(key) == ident_key:
                     result_parts.append(value)
                     found = True
                     break
@@ -264,24 +264,21 @@ def _resolve_component_display_value(
     expr = comment[1:]
     if "+" not in expr and "'" not in expr:
         param_name = expr
-        param_key = dotnet_ordinal_ignore_case_key(param_name)
-        if param_key == dotnet_ordinal_ignore_case_key("value"):
+        param_key = altium_name_key(param_name)
+        if param_key == altium_name_key("value"):
             return comp.value
         param_value = comp.get_parameter(param_name)
         if param_value is not None:
             return param_value
-        if (
-            param_key == dotnet_ordinal_ignore_case_key("description")
-            and component_description
-        ):
+        if param_key == altium_name_key("description") and component_description:
             return component_description
         if sheet_params:
             for key, value in sheet_params.items():
-                if dotnet_ordinal_ignore_case_key(key) == param_key:
+                if altium_name_key(key) == param_key:
                     return value
         if project_params:
             for key, value in project_params.items():
-                if dotnet_ordinal_ignore_case_key(key) == param_key:
+                if altium_name_key(key) == param_key:
                     return value
         return comment
 
@@ -473,7 +470,7 @@ def _bridge_root_is_eligible(
     if eligible_interface_ids is None:
         return True
     return any(
-        dotnet_ordinal_ignore_case_key(identity) in eligible_interface_ids
+        altium_name_key(identity) in eligible_interface_ids
         for identity in (*final_port_ids.get(root, ()), *final_se_ids.get(root, ()))
     )
 
@@ -520,13 +517,13 @@ def _emit_auto_named_nets(
                 continue
 
             def compare_pins(left: _NetPinLike, right: _NetPinLike) -> int:
-                component_order = managed_alpha_numeric_compare(
+                component_order = altium_alpha_numeric_compare(
                     left.component_designator,
                     right.component_designator,
                 )
                 if component_order:
                     return component_order
-                return managed_alpha_numeric_compare(left.designator, right.designator)
+                return altium_alpha_numeric_compare(left.designator, right.designator)
 
             sorted_pins = sorted(pins, key=cmp_to_key(compare_pins))
             first_pin = sorted_pins[0]

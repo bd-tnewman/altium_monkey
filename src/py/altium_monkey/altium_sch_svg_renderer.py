@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from .altium_font_resolver import resolve_font_with_style
 from ._sch_source_admission import _SourceAdmission
-from .altium_dotnet_ordinal import dotnet_ordinal_ignore_case_key
+from .altium_text_semantics import altium_name_key
 from .altium_record_types import CoordPoint, LineStyle, LineWidth, color_to_hex
 from .altium_ttf_metrics import (
     get_font_factor,
@@ -2448,7 +2448,7 @@ class SchSvgRenderContext:
             if parent_id not in imported_parameter_sets:
                 continue
             self._parameter_set_work_budget.reserve_text_characters(len(source.name))
-            if dotnet_ordinal_ignore_case_key(source.name) in imported_parameter_names:
+            if altium_name_key(source.name) in imported_parameter_names:
                 imported_parameters.add(id(source))
         self._imported_parameter_set_ids = frozenset(imported_parameter_sets)
         self._imported_parameter_ids = frozenset(imported_parameters)

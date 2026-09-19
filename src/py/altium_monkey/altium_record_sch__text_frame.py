@@ -1011,6 +1011,7 @@ class AltiumSchTextFrame(
         text = self.text.replace("~1", "\n")
         text = ctx.substitute_parameters(text)
         text = self._restore_managed_line_endings(text)
+        had_trailing_empty_line = text.endswith("\n")
         lines = self._wrap_text_to_lines(
             text,
             text_area_width,
@@ -1019,7 +1020,6 @@ class AltiumSchTextFrame(
             is_bold,
             is_italic,
         )
-        had_trailing_empty_line = False
         return (
             font_name,
             font_size_px,

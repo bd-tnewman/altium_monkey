@@ -329,7 +329,6 @@ class AltiumSchNote(AltiumSchTextFrame):
                 [shadow_points],
                 pen=make_pen(
                     rgb_to_win32(shadow_stroke_rgb),
-                    alpha=125,
                     width=pen_width,
                 ),
             )

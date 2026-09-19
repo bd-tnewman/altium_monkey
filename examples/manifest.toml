@@ -1834,6 +1834,34 @@ requires_extra = []
 tags = ["intlib", "library", "source-extraction", "schlib", "pcblib"]
 
 [[examples]]
+id = "intlib_create_from_libraries"
+title = "Create multi-source and aggregate IntLibs"
+summary = "Build the same realistic seven-component IC, protection, and resistor subset from ordered source libraries and from merged aggregate libraries, then verify graph equivalence, exact embedded sources, warnings, and deterministic output."
+areas = ["intlib", "schlib", "pcblib"]
+status = "ready"
+entrypoint = "intlib_create_from_libraries/intlib_create_from_libraries.py"
+doc = "intlib_create_from_libraries/README.md"
+inputs = [
+  "assets/schlib/MIMXRT685SFVKB.Schlib",
+  "assets/schlib/24LC32AT.SchLib",
+  "assets/schlib/MX25R6435FZNIL0.Schlib",
+  "assets/schlib/SM712-02HTG.Schlib",
+  "assets/schlib/R_2P.Schlib",
+  "assets/pcblib/RT_SUPER_C1.PcbLib",
+  "assets/pcblib/R0603_0.55MM_MD.PcbLib",
+]
+assets = []
+outputs = [
+  "intlib_create_from_libraries/output/ic-subset-multi-source.IntLib",
+  "intlib_create_from_libraries/output/ic-subset-aggregate.IntLib",
+  "intlib_create_from_libraries/output/prepared/multi_source/",
+  "intlib_create_from_libraries/output/prepared/aggregate/",
+  "intlib_create_from_libraries/output/intlib_create_manifest.json",
+]
+requires_extra = []
+tags = ["intlib", "library", "generation", "multi-source", "aggregate", "schlib", "pcblib", "shared-footprint", "alternate-footprint"]
+
+[[examples]]
 id = "embedded_asset_inventory"
 title = "Inventory embedded PCB assets"
 summary = "Load PcbDoc and PcbLib fixtures, write focused embedded-asset inventories, and extract one selected model/font payload by direct embedded asset index."

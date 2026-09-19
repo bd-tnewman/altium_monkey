@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, cast
 
 from ._compiler_source import _compiler_document_source
 from ._logical_source_identity import _logical_source_identity_key
-from .altium_dotnet_ordinal import dotnet_ordinal_ignore_case_key, dotnet_trim
+from .altium_text_semantics import altium_name_key, trim_altium_whitespace
 from .altium_compiled_design_model import (
     AltiumCompiledComponent,
     AltiumCompiledDesign,
@@ -90,7 +90,7 @@ class _LegacyDesignatorResolver:
             resolved = self.by_occurrence_uid.get(
                 (
                     physical_document_id,
-                    dotnet_ordinal_ignore_case_key(source_component_uid),
+                    altium_name_key(source_component_uid),
                 )
             )
             if resolved is not None:
@@ -104,7 +104,7 @@ class _LegacyDesignatorResolver:
         if designator in self.display_designators:
             return designator
         return self.by_name.get(
-            dotnet_ordinal_ignore_case_key(designator),
+            altium_name_key(designator),
             designator,
         )
 
@@ -124,7 +124,7 @@ class _LegacyDesignatorResolver:
             resolved = self.component_ids_by_page_and_source_uid.get(
                 (
                     physical_document_id,
-                    dotnet_ordinal_ignore_case_key(source_component_uid),
+                    altium_name_key(source_component_uid),
                 )
             )
             if resolved is not None:
@@ -169,7 +169,7 @@ def _add_legacy_designator_alias_candidate(
 ) -> None:
     if not alias:
         return
-    aliases[dotnet_ordinal_ignore_case_key(alias)].add(display_designator)
+    aliases[altium_name_key(alias)].add(display_designator)
 
 
 def _legacy_component_designator_aliases_for_bases(
@@ -270,7 +270,7 @@ def _legacy_occurrence_uid_designators(
         candidates[
             (
                 component.physical_document_id,
-                dotnet_ordinal_ignore_case_key(component.source_object_id),
+                altium_name_key(component.source_object_id),
             )
         ].add(component.display_designator)
     return {
@@ -310,39 +310,33 @@ def _legacy_component_ids_by_source_uid(
     compiled: AltiumCompiledDesign,
 ) -> dict[tuple[str, str], str]:
     """Bind every multipart body UID to its aggregate compiled component."""
-    aggregate_candidates: dict[tuple[str, str, str], set[str]] = defaultdict(set)
+    aggregate_candidates: dict[tuple[str, str, int, str], set[str]] = defaultdict(set)
     candidates: dict[tuple[str, str], set[str]] = defaultdict(set)
     for component in compiled.components:
-        aggregate_candidates[
-            (
-                component.physical_document_id,
-                component.logical_designator,
-                component.physical_designator,
-            )
-        ].add(component.id)
+        for occurrence in component._managed_source_component_occurrences:
+            aggregate_candidates[occurrence].add(component.id)
         if component.physical_document_id and component.source_object_id:
             candidates[
                 (
                     component.physical_document_id,
-                    dotnet_ordinal_ignore_case_key(component.source_object_id),
+                    altium_name_key(component.source_object_id),
                 )
             ].add(component.id)
     for body in compiled._component_body_evidence:
         if body.physical_document_id and body.source_object_id:
-            aggregate_ids = aggregate_candidates.get(
-                (
-                    body.physical_document_id,
-                    body.logical_designator,
-                    body.physical_designator,
-                ),
-                set(),
-            )
+            # A body row keeps the single pre-merge occurrence of its own
+            # placed record, and the aggregate that folded it carries that
+            # same occurrence tuple, so exact occurrence identity binds
+            # parts split across sheets without consulting designator text.
+            aggregate_ids: set[str] = set()
+            for occurrence in body._managed_source_component_occurrences:
+                aggregate_ids.update(aggregate_candidates.get(occurrence, set()))
             if len(aggregate_ids) != 1:
                 continue
             candidates[
                 (
                     body.physical_document_id,
-                    dotnet_ordinal_ignore_case_key(body.source_object_id),
+                    altium_name_key(body.source_object_id),
                 )
             ].update(aggregate_ids)
     return {
@@ -1159,7 +1153,7 @@ def _document_pair_for_link_net(
 
 
 def _strip_harness_parent_name(value: str) -> str:
-    clean = dotnet_trim(str(value or ""))
+    clean = trim_altium_whitespace(str(value or ""))
     if clean.startswith("{") and clean.endswith("}"):
         return clean[1:-1]
     return clean
@@ -1377,7 +1371,7 @@ def _matching_bundle_port_ids(
         str(getattr(port, "unique_id", "") or "")
         for port in active_ports
         if getattr(port, "name", "")
-        and dotnet_ordinal_ignore_case_key(str(getattr(port, "name", ""))) == port_key
+        and altium_name_key(str(getattr(port, "name", ""))) == port_key
     ]
 
 
@@ -1431,10 +1425,12 @@ def _bundle_endpoint_row(
     port_name = port_name_value if isinstance(port_name_value, str) else ""
     if not port_name:
         return None
-    port_key = dotnet_ordinal_ignore_case_key(port_name)
+    port_key = altium_name_key(port_name)
     port_ids = _matching_bundle_port_ids(active_ports, port_key)
     signal_harness_ids = _bundle_signal_harness_ids(bundle_info)
-    connector_id = dotnet_trim(str(getattr(connector, "unique_id", "") or ""))
+    connector_id = trim_altium_whitespace(
+        str(getattr(connector, "unique_id", "") or "")
+    )
     object_ids = _unique_nonempty([*port_ids, *signal_harness_ids, connector_id])
     return port_key, {
         "name": port_name,
@@ -1564,9 +1560,7 @@ def _matching_bundle_endpoint_source(
     return next(
         (
             endpoint
-            for endpoint in endpoints_by_name.get(
-                dotnet_ordinal_ignore_case_key(name), []
-            )
+            for endpoint in endpoints_by_name.get(altium_name_key(name), [])
             if endpoint["sheet_index"] == child.get("sheet_index")
         ),
         None,
@@ -1593,7 +1587,9 @@ def _hierarchical_bundle_link_parts(
         return None
     parent = link.get("parent", {})
     child = link.get("child", {})
-    parent_entry_name = dotnet_trim(str(parent.get("sheet_entry_name") or ""))
+    parent_entry_name = trim_altium_whitespace(
+        str(parent.get("sheet_entry_name") or "")
+    )
     link_name = str(parent.get("name") or parent_entry_name)
     child_endpoint_name = str(child.get("name") or link_name)
     if not parent_entry_name or not child_endpoint_name:
@@ -1630,7 +1626,7 @@ def _hierarchical_bundle_link_parts(
         child.get("sheet_index"),
         child.get("compiled_sheet_index"),
         str(parent.get("sheet_symbol_id") or ""),
-        dotnet_ordinal_ignore_case_key(child_endpoint_name),
+        altium_name_key(child_endpoint_name),
     )
     return key, link_name, parent_endpoint, child_endpoint, parent_row
 
@@ -1728,7 +1724,7 @@ def _active_port_name_keys(
     if schdoc is None:
         return set()
     return {
-        dotnet_ordinal_ignore_case_key(str(getattr(port, "name", "") or ""))
+        altium_name_key(str(getattr(port, "name", "") or ""))
         for port in schdoc.get_ports()
         if not _port_is_compile_masked(port, compile_masks)
     }
@@ -1749,7 +1745,7 @@ def _active_unlinked_entry_name(
     entry_name = _entry_display_name(entry)
     if not entry_name:
         return None
-    if (sheet_symbol_id, dotnet_ordinal_ignore_case_key(entry_name)) in linked_keys:
+    if (sheet_symbol_id, altium_name_key(entry_name)) in linked_keys:
         return None
     return None if str(getattr(entry, "harness_type", "") or "") else entry_name
 
@@ -1777,7 +1773,7 @@ def _unmatched_child_port_row(
         return None
     parsed_repeat_name = _parse_entry_repeat(entry_name) if symbol.is_repeat else None
     match_name = parsed_repeat_name if parsed_repeat_name is not None else entry_name
-    if dotnet_ordinal_ignore_case_key(match_name) in child_port_names:
+    if altium_name_key(match_name) in child_port_names:
         return None
     parent_index = parent_logical.ordinal if parent_logical is not None else None
     return {
@@ -1849,9 +1845,7 @@ def _build_compiled_hierarchy_unresolved(
     linked_keys = {
         (
             str(link.get("parent", {}).get("sheet_symbol_id") or ""),
-            dotnet_ordinal_ignore_case_key(
-                str(link.get("parent", {}).get("sheet_entry_name") or "")
-            ),
+            altium_name_key(str(link.get("parent", {}).get("sheet_entry_name") or "")),
         )
         for link in hierarchy_links
     }

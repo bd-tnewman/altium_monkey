@@ -26,7 +26,7 @@ from enum import IntEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
-from .altium_dotnet_ordinal import dotnet_ordinal_ignore_case_key, dotnet_trim
+from .altium_text_semantics import altium_name_key, trim_altium_whitespace
 from .altium_api_markers import public_api
 from .altium_configparser_helpers import preserve_option_case as _preserve_option_case
 from ._logical_source_identity import (
@@ -82,7 +82,7 @@ def _parse_variant_key_values(value: str) -> dict[str, str]:
         if "=" not in pair:
             continue
         key, parsed_value = pair.split("=", 1)
-        lookup_key = dotnet_ordinal_ignore_case_key(key)
+        lookup_key = altium_name_key(key)
         selected_key = field_names.setdefault(lookup_key, key)
         result[selected_key] = parsed_value
     return result
@@ -106,11 +106,11 @@ def _build_parameter_override_map(
         parameter_name = str(_variant_row_value(row, "ParameterName") or "").strip()
         if not designator or not parameter_name:
             continue
-        designator_key = dotnet_ordinal_ignore_case_key(designator)
+        designator_key = altium_name_key(designator)
         selected_designator = designator_names.setdefault(designator_key, designator)
         selected_parameters = overrides.setdefault(selected_designator, {})
         selected_names = parameter_names.setdefault(designator_key, {})
-        parameter_key = dotnet_ordinal_ignore_case_key(parameter_name)
+        parameter_key = altium_name_key(parameter_name)
         selected_parameter = selected_names.setdefault(parameter_key, parameter_name)
         selected_parameters[selected_parameter] = str(
             _variant_row_value(row, "VariantValue") or ""
@@ -119,9 +119,9 @@ def _build_parameter_override_map(
 
 
 def _variant_row_value(row: Mapping[str, str], name: str) -> str | None:
-    lookup_key = dotnet_ordinal_ignore_case_key(name)
+    lookup_key = altium_name_key(name)
     for key, value in reversed(tuple(row.items())):
-        if dotnet_ordinal_ignore_case_key(key) == lookup_key:
+        if altium_name_key(key) == lookup_key:
             return value
     return None
 
@@ -135,7 +135,7 @@ def _managed_variation_row(
         return None
     parameter_designator, unique_id, raw_kind, alternate = required
     designator = parameter_designator
-    if not dotnet_trim(unique_id):
+    if not trim_altium_whitespace(unique_id):
         return None
     kind = _managed_variation_kind(raw_kind)
     raw_alternate_part = alternate if kind == "2" else ""
@@ -197,13 +197,13 @@ def _managed_alternate_library_link(
                 else parsed
             )
         else:
-            values[name] = value if dotnet_trim(value) else ""
+            values[name] = value if trim_altium_whitespace(value) else ""
     return values
 
 
 def _managed_library_identifier_kind(value: str) -> str:
     kinds = {
-        dotnet_ordinal_ignore_case_key(label): name
+        altium_name_key(label): name
         for label, name in (
             ("Any", "Any"),
             ("Library Name Only", "NameNoType"),
@@ -212,7 +212,7 @@ def _managed_library_identifier_kind(value: str) -> str:
             ("Vault Name", "VaultName"),
         )
     }
-    return kinds.get(dotnet_ordinal_ignore_case_key(value), "NameWithType")
+    return kinds.get(altium_name_key(value), "NameWithType")
 
 
 def _managed_alternate_link_is_valid(fields: list[str]) -> bool:
@@ -226,7 +226,7 @@ def _managed_alternate_link_is_valid(fields: list[str]) -> bool:
         name, separator, value = field.partition("=")
         # Managed prefix matching ignores case; its field-name switch does not.
         if separator and name in identifiers:
-            identifiers[name] = bool(dotnet_trim(value))
+            identifiers[name] = bool(trim_altium_whitespace(value))
     return (identifiers["LibraryIdentifier"] and identifiers["DesignItemID"]) or (
         identifiers["VaultGUID"] and identifiers["ItemGUID"]
     )
@@ -266,8 +266,8 @@ def _managed_field_value(
     *,
     anywhere: bool = False,
 ) -> str | None:
-    normalized = dotnet_ordinal_ignore_case_key(value)
-    normalized_marker = dotnet_ordinal_ignore_case_key(marker)
+    normalized = altium_name_key(value)
+    normalized_marker = altium_name_key(marker)
     index = normalized.find(normalized_marker) if anywhere else 0
     if index < 0 or not normalized[index:].startswith(normalized_marker):
         return None
@@ -275,9 +275,7 @@ def _managed_field_value(
 
 
 def _managed_field_starts_with(value: str, marker: str) -> bool:
-    return dotnet_ordinal_ignore_case_key(value).startswith(
-        dotnet_ordinal_ignore_case_key(marker)
-    )
+    return altium_name_key(value).startswith(altium_name_key(marker))
 
 
 def _managed_variation_parameter(raw: str) -> tuple[str, str] | None:
@@ -285,16 +283,14 @@ def _managed_variation_parameter(raw: str) -> tuple[str, str] | None:
     if len(fields) < 2:
         return None
     parameter_marker = "ParameterName="
-    parameter_index = dotnet_ordinal_ignore_case_key(fields[0]).find(
-        dotnet_ordinal_ignore_case_key(parameter_marker)
-    )
+    parameter_index = altium_name_key(fields[0]).find(altium_name_key(parameter_marker))
     if parameter_index < 0 or not _managed_field_starts_with(
         fields[1], "VariantValue="
     ):
         return None
     name = fields[0][parameter_index + len(parameter_marker) :]
     value = fields[1][len("VariantValue=") :]
-    return name, value if dotnet_trim(value) else ""
+    return name, value if trim_altium_whitespace(value) else ""
 
 
 def _managed_variations_from_entries(
@@ -360,9 +356,7 @@ def _attach_managed_line_parameter(
     if not separator or not _numbered_key(key, "ParamVariation"):
         return
     designator = str(variation["_parameter_designator"])
-    if not dotnet_ordinal_ignore_case_key(lines[index + 1]).endswith(
-        dotnet_ordinal_ignore_case_key(designator)
-    ):
+    if not altium_name_key(lines[index + 1]).endswith(altium_name_key(designator)):
         return
     parsed = _managed_variation_parameter(raw)
     if parsed is not None:
@@ -377,12 +371,12 @@ def _set_managed_variation_parameter(
     parameters = variation["_parameters"]
     if not isinstance(parameters, dict):
         return
-    lookup_key = dotnet_ordinal_ignore_case_key(name)
+    lookup_key = altium_name_key(name)
     selected_name = next(
         (
             str(candidate)
             for candidate in parameters
-            if dotnet_ordinal_ignore_case_key(str(candidate)) == lookup_key
+            if altium_name_key(str(candidate)) == lookup_key
         ),
         name,
     )
@@ -401,27 +395,25 @@ def _attach_managed_variation_parameters(
     parameter_names: dict[str, str] = {}
     for index in range(start, len(entries) - 1):
         key, raw = entries[index]
-        if dotnet_ordinal_ignore_case_key(key).startswith("VARIATION"):
+        if altium_name_key(key).startswith("VARIATION"):
             break
         if not _numbered_key(key, "ParamVariation"):
             continue
         next_key, next_value = entries[index + 1]
         next_line = f"{next_key}={next_value}"
-        if not dotnet_ordinal_ignore_case_key(next_line).endswith(
-            dotnet_ordinal_ignore_case_key(designator)
-        ):
+        if not altium_name_key(next_line).endswith(altium_name_key(designator)):
             continue
         parsed = _managed_variation_parameter(raw)
         if parsed is not None:
             name, value = parsed
-            lookup_key = dotnet_ordinal_ignore_case_key(name)
+            lookup_key = altium_name_key(name)
             selected_name = parameter_names.setdefault(lookup_key, name)
             parameters[selected_name] = value
 
 
 def _numbered_key(value: str, prefix: str) -> bool:
-    normalized = dotnet_ordinal_ignore_case_key(value)
-    marker = dotnet_ordinal_ignore_case_key(prefix)
+    normalized = altium_name_key(value)
+    marker = altium_name_key(prefix)
     suffix = normalized[len(marker) :]
     return (
         normalized.startswith(marker)
@@ -435,7 +427,7 @@ def _managed_variant_source_lines(
     source_lines: list[str],
     variant_name: str,
 ) -> list[str] | None:
-    target = dotnet_ordinal_ignore_case_key(variant_name)
+    target = altium_name_key(variant_name)
     for index, line in enumerate(source_lines):
         if not _managed_field_starts_with(line, "[ProjectVariant"):
             continue
@@ -443,7 +435,7 @@ def _managed_variant_source_lines(
         if header is None:
             continue
         description, description_index = header
-        if dotnet_ordinal_ignore_case_key(description) != target:
+        if altium_name_key(description) != target:
             continue
         end = _managed_variant_region_end(source_lines, description_index + 1)
         return source_lines[description_index + 1 : end]
@@ -471,16 +463,16 @@ def _managed_variant_parameters_from_lines(lines: list[str]) -> dict[str, str]:
         value = _managed_field_value(lines[index + 2], "Value=")
         if name is None or value is None:
             continue
-        lookup = dotnet_ordinal_ignore_case_key(name)
+        lookup = altium_name_key(name)
         existing = next(
             (
                 candidate
                 for candidate in parameters
-                if dotnet_ordinal_ignore_case_key(candidate) == lookup
+                if altium_name_key(candidate) == lookup
             ),
             None,
         )
-        normalized = value if dotnet_trim(value) else ""
+        normalized = value if trim_altium_whitespace(value) else ""
         if existing is None:
             parameters[name] = normalized
         else:
@@ -513,15 +505,12 @@ def _managed_entries_description(entries: list[tuple[str, str]]) -> str | None:
     if not entries:
         return None
     description_index = int(
-        dotnet_ordinal_ignore_case_key(entries[0][0])
-        == dotnet_ordinal_ignore_case_key("UniqueID")
+        altium_name_key(entries[0][0]) == altium_name_key("UniqueID")
     )
     if description_index >= len(entries):
         return None
     key, description = entries[description_index]
-    if dotnet_ordinal_ignore_case_key(key) != dotnet_ordinal_ignore_case_key(
-        "Description"
-    ):
+    if altium_name_key(key) != altium_name_key("Description"):
         return None
     return description
 
@@ -531,15 +520,15 @@ def _managed_config_value(
     section_name: str,
     option_name: str,
 ) -> str | None:
-    section_key = dotnet_ordinal_ignore_case_key(section_name)
-    option_key = dotnet_ordinal_ignore_case_key(option_name)
+    section_key = altium_name_key(section_name)
+    option_key = altium_name_key(option_name)
     selected: str | None = None
     for section in config.sections():
-        if dotnet_ordinal_ignore_case_key(section) != section_key:
+        if altium_name_key(section) != section_key:
             continue
         entries = _raw_config_section_entries(config, section) or []
         for key, value in entries:
-            if dotnet_ordinal_ignore_case_key(key) == option_key:
+            if altium_name_key(key) == option_key:
                 selected = value
         break
     return selected
@@ -549,7 +538,7 @@ def _selected_variant_section(
     config: configparser.ConfigParser,
     variant_name: str,
 ) -> str | None:
-    target = dotnet_ordinal_ignore_case_key(variant_name)
+    target = altium_name_key(variant_name)
     for section in config.sections():
         if not _managed_field_starts_with(section, "ProjectVariant"):
             continue
@@ -557,10 +546,7 @@ def _selected_variant_section(
         description = (
             _managed_entries_description(entries) if entries is not None else None
         )
-        if (
-            description is not None
-            and dotnet_ordinal_ignore_case_key(description) == target
-        ):
+        if description is not None and altium_name_key(description) == target:
             return section
     return None
 

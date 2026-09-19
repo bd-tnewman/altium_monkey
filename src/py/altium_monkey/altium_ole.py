@@ -213,7 +213,13 @@ class AltiumOleFile:
             ole.write("output.SchLib")
     """
 
-    def __init__(self, filename: OleFileSource | None = None) -> None:
+    def __init__(
+        self,
+        filename: OleFileSource | None = None,
+        *,
+        max_file_bytes: int | None = None,
+        max_directory_entries: int | None = None,
+    ) -> None:
         """
         Initialize OLE file.
 
@@ -252,6 +258,8 @@ class AltiumOleFile:
         self._first_difat_sector: int = 0
         self._num_difat_sectors: int = 0
         self._header_difat: list[int] = []
+        self._max_file_bytes = max_file_bytes
+        self._max_directory_entries = max_directory_entries
 
         if filename is not None:
             self.open(filename)
@@ -272,11 +280,26 @@ class AltiumOleFile:
         # Load data
         if isinstance(filename, (str, Path)):
             self._filepath = Path(filename)
+            if (
+                self._max_file_bytes is not None
+                and self._filepath.stat().st_size > self._max_file_bytes
+            ):
+                raise ValueError("OLE file exceeds the configured byte limit")
             self._data = bytearray(self._filepath.read_bytes())
         elif isinstance(filename, bytes):
+            if (
+                self._max_file_bytes is not None
+                and len(filename) > self._max_file_bytes
+            ):
+                raise ValueError("OLE file exceeds the configured byte limit")
             self._data = bytearray(filename)
         elif hasattr(filename, "read"):
             self._data = bytearray(filename.read())
+            if (
+                self._max_file_bytes is not None
+                and len(self._data) > self._max_file_bytes
+            ):
+                raise ValueError("OLE file exceeds the configured byte limit")
         else:
             raise ValueError(f"Unsupported filename type: {type(filename)}")
 
@@ -425,6 +448,17 @@ class AltiumOleFile:
         Parse directory entries.
         """
         self._directory = []
+
+        if self._max_directory_entries is not None:
+            directory_sectors = self._get_sector_chain(
+                self._first_dir_sector,
+                use_fat=True,
+            )
+            entry_capacity = (
+                len(directory_sectors) * self._sector_size // DIR_ENTRY_SIZE
+            )
+            if entry_capacity > self._max_directory_entries:
+                raise ValueError("OLE directory exceeds the configured entry limit")
 
         # Read all directory sectors following FAT chain
         dir_data = self._read_stream_by_sector(self._first_dir_sector, use_fat=True)
@@ -1151,17 +1185,13 @@ class AltiumOleWriter:
         """
         filepath = Path(filepath)
 
-        # Build entries list
+        filepath.write_bytes(self._to_bytes())
+
+    def _to_bytes(self) -> bytes:
+        """Build the complete OLE container in memory."""
         entries = self._build_entries()
-
-        # Calculate layout
         layout = self._calculate_layout(entries)
-
-        # Build file data
-        file_data = self._build_file(entries, layout)
-
-        # Write to disk
-        filepath.write_bytes(file_data)
+        return self._build_file(entries, layout)
 
     def _build_entries(self) -> list[_WriterEntry]:
         """

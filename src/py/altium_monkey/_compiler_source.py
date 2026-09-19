@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
+from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -57,14 +58,15 @@ class _AdmittedComponentSource(_CompilerComponentSource):
         return self._source_footprint
 
     def display_body_element_ids(self) -> list[str]:
+        records = self.record._display_body_records()
         admitted = {
             str(getattr(record, "unique_id", "") or "").strip()
-            for record in self.record._display_body_records()
+            for record in records
             if id(record) not in self._source_ignored
         }
         return [
             value
-            for value in self.record.display_body_element_ids()
+            for value in self.record._display_body_element_ids_from_records(records)
             if value in admitted
         ]
 
@@ -90,11 +92,13 @@ class _AdmittedPortSource(SchPortInfo):
 class _CompilerDocumentSource:
     def __init__(self, document: AltiumSchDoc) -> None:
         self._document = document
+        self._source_objects = tuple(document.all_objects)
+        self._source_parameters = tuple(document.parameters)
         self._parents = {
-            id(row): self._source_parent(row) for row in document.all_objects
+            id(row): self._source_parent(row) for row in self._source_objects
         }
         self._ignored = _ignored_source_object_ids(
-            document.all_objects, parents=self._parents
+            self._source_objects, parents=self._parents
         )
         self._hidden_net_names = self._prepare_hidden_net_names()
         self._unattached = self._prepare_parameter_membership()
@@ -139,7 +143,7 @@ class _CompilerDocumentSource:
 
     @property
     def all_objects(self) -> Iterator[object]:
-        return (record for record in self._document.all_objects if self.admits(record))
+        return (record for record in self._source_objects if self.admits(record))
 
     @property
     def harness_connectors(self) -> list[AltiumSchHarnessConnector]:
@@ -151,9 +155,17 @@ class _CompilerDocumentSource:
 
     @property
     def bus_entries(self) -> list[AltiumSchBusEntry]:
-        return self._admitted(self._document.bus_entries)
+        return list(self._cached_bus_entries)
+
+    @cached_property
+    def _cached_bus_entries(self) -> tuple[AltiumSchBusEntry, ...]:
+        return tuple(self._admitted(self._document.bus_entries))
 
     def get_components(self) -> list[_AdmittedComponentSource]:
+        return list(self._cached_components)
+
+    @cached_property
+    def _cached_components(self) -> tuple[_AdmittedComponentSource, ...]:
         result: list[_AdmittedComponentSource] = []
         for ordinal, component in enumerate(
             _compiler_component_sources(self._document)
@@ -175,18 +187,18 @@ class _CompilerDocumentSource:
                     _source_graphics=tuple(self._admitted(component.record.graphics)),
                 )
             )
-        return result
+        return tuple(result)
 
     def _prepare_hidden_net_names(self) -> dict[int, str]:
-        from .altium_dotnet_ordinal import dotnet_ordinal_ignore_case_key
+        from .altium_text_semantics import altium_name_key
         from .altium_record_sch__pin import AltiumSchPin
 
         names: dict[int, str] = {}
-        for parameter in self._document.parameters:
+        for parameter in self._source_parameters:
             parent = self._source_parent(parameter)
             if not isinstance(parent, AltiumSchPin):
                 continue
-            if dotnet_ordinal_ignore_case_key(parameter.name) not in {
+            if altium_name_key(parameter.name) not in {
                 "DEFAULTNET",
                 "HIDDENNETNAME",
             }:
@@ -200,7 +212,7 @@ class _CompilerDocumentSource:
         from ._sch_source_projection import _parameter_source_exclusions
 
         return _parameter_source_exclusions(
-            tuple(self._document.all_objects), self._parents, self._ignored
+            self._source_objects, self._parents, self._ignored
         )
 
     def _prepare_parameters(self) -> dict[int, list[AltiumSchParameter]]:
@@ -208,7 +220,7 @@ class _CompilerDocumentSource:
 
         parameters: dict[int, list[AltiumSchParameter]] = {}
         document_parameters = {id(row) for row in self._document._document_parameters()}
-        for parameter in self._document.parameters:
+        for parameter in self._source_parameters:
             if parameter.record_type != SchRecordType.PARAMETER or not self.admits(
                 parameter
             ):
@@ -246,7 +258,7 @@ class _CompilerDocumentSource:
         )
 
         footprints: dict[int, str] = {}
-        for record in self._document.all_objects:
+        for record in self._source_objects:
             if not isinstance(record, AltiumSchImplementation) or not self.admits(
                 record
             ):
@@ -261,13 +273,21 @@ class _CompilerDocumentSource:
         return footprints
 
     def get_all_pins(self) -> list[SchPinInfo]:
-        return [
+        return list(self._cached_all_pins)
+
+    @cached_property
+    def _cached_all_pins(self) -> tuple[SchPinInfo, ...]:
+        return tuple(
             SchPinInfo(pin=pin, component=component)
             for component in self.get_components()
             for pin in component.pins
-        ]
+        )
 
     def get_sheet_symbols(self) -> list[_AdmittedSheetSymbolSource]:
+        return list(self._cached_sheet_symbols)
+
+    @cached_property
+    def _cached_sheet_symbols(self) -> tuple[_AdmittedSheetSymbolSource, ...]:
         result: list[_AdmittedSheetSymbolSource] = []
         for ordinal, symbol in enumerate(
             _compiler_sheet_symbol_sources(self._document)
@@ -292,7 +312,7 @@ class _CompilerDocumentSource:
                     _source_entry_ordinals=tuple(index for index, _ in entries),
                 )
             )
-        return result
+        return tuple(result)
 
     def _prepare_harnesses(self) -> list[_AdmittedHarnessSource]:
         result: list[_AdmittedHarnessSource] = []
@@ -318,43 +338,77 @@ class _CompilerDocumentSource:
         return list(self._harnesses)
 
     def harness_entries(self, connector: object) -> list[AltiumSchHarnessEntry]:
-        return self._harness_entries.get(id(connector), [])
+        return list(self._harness_entries.get(id(connector), ()))
 
     def get_ports(self) -> list[_AdmittedPortSource]:
-        return [
+        return list(self._cached_ports)
+
+    @cached_property
+    def _cached_ports(self) -> tuple[_AdmittedPortSource, ...]:
+        return tuple(
             _AdmittedPortSource(record=port.record, _source_ordinal=ordinal)
             for ordinal, port in enumerate(self._document.get_ports())
             if self.admits(port.record)
-        ]
+        )
 
     def get_wires(self) -> list[AltiumSchWire]:
-        return self._admitted(self._document.get_wires())
+        return list(self._cached_wires)
+
+    @cached_property
+    def _cached_wires(self) -> tuple[AltiumSchWire, ...]:
+        return tuple(self._admitted(self._document.get_wires()))
 
     def get_buses(self) -> list[AltiumSchBus]:
-        return self._admitted(self._document.get_buses())
+        return list(self._cached_buses)
+
+    @cached_property
+    def _cached_buses(self) -> tuple[AltiumSchBus, ...]:
+        return tuple(self._admitted(self._document.get_buses()))
 
     def get_signal_harnesses(self) -> list[AltiumSchSignalHarness]:
-        return self._admitted(self._document.get_signal_harnesses())
+        return list(self._cached_signal_harnesses)
+
+    @cached_property
+    def _cached_signal_harnesses(self) -> tuple[AltiumSchSignalHarness, ...]:
+        return tuple(self._admitted(self._document.get_signal_harnesses()))
 
     def get_junctions(self) -> list[AltiumSchJunction]:
-        return self._admitted(self._document.get_junctions())
+        return list(self._cached_junctions)
+
+    @cached_property
+    def _cached_junctions(self) -> tuple[AltiumSchJunction, ...]:
+        return tuple(self._admitted(self._document.get_junctions()))
 
     def get_net_labels(self) -> list[SchNetLabelInfo]:
-        return [
+        return list(self._cached_net_labels)
+
+    @cached_property
+    def _cached_net_labels(self) -> tuple[SchNetLabelInfo, ...]:
+        return tuple(
             row for row in self._document.get_net_labels() if self.admits(row.record)
-        ]
+        )
 
     def get_power_ports(self) -> list[SchPowerPortInfo]:
-        return [
+        return list(self._cached_power_ports)
+
+    @cached_property
+    def _cached_power_ports(self) -> tuple[SchPowerPortInfo, ...]:
+        return tuple(
             row for row in self._document.get_power_ports() if self.admits(row.record)
-        ]
+        )
 
     def get_cross_sheet_connectors(self) -> list[SchCrossSheetConnectorInfo]:
-        return [
+        return list(self._cached_cross_sheet_connectors)
+
+    @cached_property
+    def _cached_cross_sheet_connectors(
+        self,
+    ) -> tuple[SchCrossSheetConnectorInfo, ...]:
+        return tuple(
             row
             for row in self._document.get_cross_sheet_connectors()
             if self.admits(row.record)
-        ]
+        )
 
     def _document_parameters(self) -> Iterator[AltiumSchParameter]:
         return iter(self._parameters_by_owner.get(id(self.sheet), ()))
@@ -363,10 +417,20 @@ class _CompilerDocumentSource:
         return {row.name: row.text for row in self._document_parameters()}
 
     def _collect_compile_mask_bounds(self) -> list[tuple[int, int, int, int]]:
-        return _source_compile_mask_bounds(self.all_objects, precise=False)
+        return list(self._cached_compile_mask_bounds)
+
+    @cached_property
+    def _cached_compile_mask_bounds(self) -> tuple[tuple[int, int, int, int], ...]:
+        return tuple(_source_compile_mask_bounds(self.all_objects, precise=False))
 
     def _collect_compile_mask_precise_bounds(self) -> list[tuple[int, int, int, int]]:
-        return _source_compile_mask_bounds(self.all_objects, precise=True)
+        return list(self._cached_compile_mask_precise_bounds)
+
+    @cached_property
+    def _cached_compile_mask_precise_bounds(
+        self,
+    ) -> tuple[tuple[int, int, int, int], ...]:
+        return tuple(_source_compile_mask_bounds(self.all_objects, precise=True))
 
 
 def _compiler_document_source(

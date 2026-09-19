@@ -28,7 +28,7 @@ from .altium_serializer import (
     write_dynamic_string_field,
 )
 from .altium_sch_record_helpers import _RecordFields
-from .altium_dotnet_ordinal import dotnet_ordinal_ignore_case_key
+from .altium_text_semantics import altium_name_key
 
 
 def _is_bus_string(text: str) -> bool:
@@ -382,7 +382,7 @@ class AltiumSchPowerPort(SingleFontBindableRecordMixin, SchGraphicalObject):
         text = self.override_display_string or self.text
         if not _is_bus_string(text):
             return text
-        folded = dotnet_ordinal_ignore_case_key(text)
+        folded = altium_name_key(text)
         if "GNDBUS" in folded:
             return "GND"
         if "VCCBUS" in folded:

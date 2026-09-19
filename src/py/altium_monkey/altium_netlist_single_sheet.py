@@ -56,8 +56,8 @@ from .altium_compiled_design_support import (
     _compiler_component_sources,
     _compiler_source_pins,
 )
-from .altium_dotnet_ordinal import dotnet_ordinal_ignore_case_key, dotnet_utf16_units
-from .altium_managed_alpha_numeric import managed_alpha_numeric_compare
+from .altium_text_semantics import altium_name_key, utf16_code_units
+from .altium_alpha_numeric import altium_alpha_numeric_compare
 from .altium_sch_record_helpers import (
     _basic_entry_distance_to_rounded_native_units,
     _coord_scalar_to_native_parts,
@@ -224,10 +224,10 @@ def _parse_bus_bound(value: str) -> int | None:
 
 
 def _managed_name_candidate_wins(candidate: str, current: str) -> bool:
-    managed_order = managed_alpha_numeric_compare(candidate, current)
+    managed_order = altium_alpha_numeric_compare(candidate, current)
     if managed_order:
         return managed_order < 0
-    return dotnet_utf16_units(candidate) > dotnet_utf16_units(current)
+    return utf16_code_units(candidate) > utf16_code_units(current)
 
 
 def _bus_context_candidate_wins(
@@ -244,13 +244,13 @@ def _bus_context_candidate_wins(
 
 
 def _managed_pin_compare(left: object, right: object) -> int:
-    component_order = managed_alpha_numeric_compare(
+    component_order = altium_alpha_numeric_compare(
         str(getattr(left, "component_designator")),
         str(getattr(right, "component_designator")),
     )
     if component_order:
         return component_order
-    pin_order = managed_alpha_numeric_compare(
+    pin_order = altium_alpha_numeric_compare(
         str(getattr(left, "designator")),
         str(getattr(right, "designator")),
     )
@@ -298,8 +298,8 @@ def _managed_pin_adapter_tiebreak_key(
         x_frac,
         int(y),
         y_frac,
-        dotnet_utf16_units(str(getattr(pin, "component_unique_id", "") or "")),
-        dotnet_utf16_units(str(getattr(pin, "unique_id", "") or "")),
+        utf16_code_units(str(getattr(pin, "component_unique_id", "") or "")),
+        utf16_code_units(str(getattr(pin, "unique_id", "") or "")),
         int(getattr(component_record, "_record_index", 0) or 0),
         int(getattr(raw_pin, "_record_index", 0) or 0),
     )
@@ -318,7 +318,7 @@ class _CreateNetFn(Protocol):
 def _managed_local_net_compare(left: Net, right: Net) -> int:
     """Compare logical/physical local nets like managed ``NetAdapter.Compare``."""
 
-    name_order = managed_alpha_numeric_compare(left.name, right.name)
+    name_order = altium_alpha_numeric_compare(left.name, right.name)
     if name_order:
         return name_order
     pin_order = len(right.terminals) - len(left.terminals)
@@ -330,7 +330,7 @@ def _managed_local_net_compare(left: Net, right: Net) -> int:
     removed_order = right._managed_removed_item_count - left._managed_removed_item_count
     if removed_order:
         return removed_order
-    owner_order = managed_alpha_numeric_compare(
+    owner_order = altium_alpha_numeric_compare(
         left._managed_first_item_owner,
         right._managed_first_item_owner,
     )
@@ -525,6 +525,7 @@ class AltiumNetlistSingleSheetCompiler:
         )
         self._compile_masked_components: dict[int, bool] = {}
         self._bridge_eligible_interface_ids: frozenset[str] | None = None
+        self._emitted_bridge_net_count: int = 0
         self._component_contract_ids: dict[int, str] = {}
 
         # Compile mask bounds - components inside are excluded from netlist
@@ -1347,8 +1348,7 @@ class AltiumNetlistSingleSheetCompiler:
             member = self._ensure_bus_net(nets, member_name)
             member._contains_bus = True
             if item.kind == "port" and all(
-                dotnet_ordinal_ignore_case_key(existing)
-                != dotnet_ordinal_ignore_case_key(member_name)
+                altium_name_key(existing) != altium_name_key(member_name)
                 for existing in member._port_bus_member_names
             ):
                 member._port_bus_member_names += (member_name,)
@@ -2332,7 +2332,7 @@ class AltiumNetlistSingleSheetCompiler:
             if wp is not None:
                 root = uf.find(wp)
                 scalar_merge_name_sources[root].append(("net_label", name))
-                net_label_roots[dotnet_ordinal_ignore_case_key(name)].append(root)
+                net_label_roots[altium_name_key(name)].append(root)
                 root_to_label_names[root].append(name)
                 if nl_obj.unique_id:
                     net_label_ids_by_root[root].append(nl_obj.unique_id)
@@ -2359,7 +2359,7 @@ class AltiumNetlistSingleSheetCompiler:
                     floating_label_roots[name].append(precise_location)
                     continue
                 scalar_merge_name_sources[pin_root].append(("net_label", name))
-                net_label_roots[dotnet_ordinal_ignore_case_key(name)].append(pin_root)
+                net_label_roots[altium_name_key(name)].append(pin_root)
                 root_to_label_names[pin_root].append(name)
                 if nl_obj.unique_id:
                     net_label_ids_by_root[pin_root].append(nl_obj.unique_id)
@@ -2407,7 +2407,7 @@ class AltiumNetlistSingleSheetCompiler:
     ) -> tuple[dict[str, list[str]], dict[str, list[RootPoint]]]:
         names_by_key: dict[str, list[str]] = defaultdict(list)
         for name in floating_labels:
-            names_by_key[dotnet_ordinal_ignore_case_key(name)].append(name)
+            names_by_key[altium_name_key(name)].append(name)
 
         retained_ids: dict[str, list[str]] = defaultdict(list)
         retained_roots: dict[str, list[RootPoint]] = defaultdict(list)
@@ -2470,7 +2470,7 @@ class AltiumNetlistSingleSheetCompiler:
                 kind = "offsheet_connector" if is_offsheet else "power_port"
                 scalar_merge_name_sources[root].append((kind, name))
                 roots = offsheet_roots if is_offsheet else power_port_roots
-                roots[dotnet_ordinal_ignore_case_key(name)].append(root)
+                roots[altium_name_key(name)].append(root)
                 self._assign_name_candidate(
                     net_names,
                     root,
@@ -2527,9 +2527,7 @@ class AltiumNetlistSingleSheetCompiler:
                 )
             entry_uid = self._sheet_symbol_uid(sheet_sym_info)
             if root is not None:
-                sheet_entry_roots[dotnet_ordinal_ignore_case_key(entry_name)].append(
-                    root
-                )
+                sheet_entry_roots[altium_name_key(entry_name)].append(root)
                 if self.options.allow_sheet_entries_to_name_nets:
                     self._assign_name_candidate(
                         net_names,
@@ -2612,7 +2610,7 @@ class AltiumNetlistSingleSheetCompiler:
             if root is not None:
                 # Connected via wire or direct pin connection
                 scalar_merge_name_sources[root].append(("port", name))
-                port_roots[dotnet_ordinal_ignore_case_key(name)].append(root)
+                port_roots[altium_name_key(name)].append(root)
                 if self.options.allow_ports_to_name_nets:
                     self._assign_name_candidate(
                         net_names,
@@ -2626,9 +2624,7 @@ class AltiumNetlistSingleSheetCompiler:
                 # Dangling port - create virtual root for hierarchy bridge
                 uf.find(precise_location)  # Register in union-find
                 scalar_merge_name_sources[precise_location].append(("port", name))
-                port_roots[dotnet_ordinal_ignore_case_key(name)].append(
-                    precise_location
-                )
+                port_roots[altium_name_key(name)].append(precise_location)
                 port_ids_by_root[precise_location].append(port_uid)
                 if self.options.allow_ports_to_name_nets:
                     self._assign_name_candidate(
@@ -2668,7 +2664,7 @@ class AltiumNetlistSingleSheetCompiler:
                         f"Hidden pin {pin.component_designator}.{pin.designator} "
                         f"({pin.name}) will connect to net '{hidden_net_name}'"
                     )
-                    name_key = dotnet_ordinal_ignore_case_key(hidden_net_name)
+                    name_key = altium_name_key(hidden_net_name)
                     hidden_pin_nets[name_key].append(root)
                     current_name = hidden_pin_names.get(name_key)
                     if current_name is None or self._candidate_is_better(
@@ -2738,7 +2734,7 @@ class AltiumNetlistSingleSheetCompiler:
             for name, roots in root_map.items():
                 if not name or name.isspace():
                     continue
-                roots_by_name[dotnet_ordinal_ignore_case_key(name)].extend(roots)
+                roots_by_name[altium_name_key(name)].extend(roots)
         for roots in roots_by_name.values():
             for left, right in zip(roots, roots[1:]):
                 uf.union(left, right)
@@ -2756,7 +2752,7 @@ class AltiumNetlistSingleSheetCompiler:
         name_to_root: dict[str, RootPoint],
     ) -> None:
         for name in tuple(floating_label_roots):
-            name_key = dotnet_ordinal_ignore_case_key(name)
+            name_key = altium_name_key(name)
             peers = [*power_roots.get(name_key, ()), *hidden_roots.get(name_key, ())]
             if not peers:
                 continue
@@ -2787,11 +2783,11 @@ class AltiumNetlistSingleSheetCompiler:
     ) -> bool:
         if candidate.priority != current.priority:
             return candidate.priority > current.priority
-        managed_order = managed_alpha_numeric_compare(candidate.name, current.name)
+        managed_order = altium_alpha_numeric_compare(candidate.name, current.name)
         if managed_order:
             return managed_order < 0
-        candidate_units = dotnet_utf16_units(candidate.name)
-        current_units = dotnet_utf16_units(current.name)
+        candidate_units = utf16_code_units(candidate.name)
+        current_units = utf16_code_units(current.name)
         return candidate_units > current_units
 
     @classmethod
@@ -3303,6 +3299,7 @@ class AltiumNetlistSingleSheetCompiler:
             candidates = [value for value in candidates if value]
             if candidates:
                 bridge_exact_names[root] = self._best_label_name(candidates)
+        net_count_before_bridge = len(nets)
         _emit_bridge_roots(
             nets,
             processed_roots,
@@ -3318,6 +3315,7 @@ class AltiumNetlistSingleSheetCompiler:
             bridge_exact_names,
             self._bridge_eligible_interface_ids,
         )
+        self._emitted_bridge_net_count = len(nets) - net_count_before_bridge
 
         # Order 3: Auto-named nets
         _emit_auto_named_nets(

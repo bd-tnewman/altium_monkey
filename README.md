@@ -49,9 +49,40 @@ Common workflows:
 7. author and mutate PCB vias, including IPC-4761 protection metadata
 8. extract embedded fonts and 3D models
 9. generate project containers and, on Windows with Altium Designer installed,
-   run associated OutJobs
+   run associated OutJobs within the limitations below
 10. create experimental Draftsman pages with notes, text, pictures, and
     generated board-assembly-view highlight artwork
+
+## Known OutJob Automation Limitation
+
+`prj.outjob().run(...)` drives Altium Designer through its scripting API. It is
+a best-effort Windows integration, not a headless release service.
+
+- The verified scope is folder-based `GeneratedFiles` manufacturing output,
+  such as Gerber, NC Drill, ODB++, IPC-2581, and some netlist outputs. Exact
+  behavior remains dependent on the installed Altium version.
+- PDF/Publish document containers, including schematic prints, PCB prints, and
+  Draftsman output, are not currently supported reliably. The runner also does
+  not iterate every output container in a mixed-media OutJob.
+- The OutJob must be listed as a document in the `.PrjPcb`, not merely stored
+  beside it. When running a disposable project copy, use its project-bound
+  OutJob with `stage_outjob_copy=False`; copying only the OutJob to a temporary
+  path can break the project-document identity required by Altium.
+- `OutJobRunResult.success` means the Altium script returned its completion
+  marker without a reported script error. Altium can still generate zero
+  files, so automation must verify its expected artifacts before accepting a
+  run.
+
+For document/PDF output, use Altium's OutJob editor to generate each container
+or use the Project Releaser, which can target a local folder or a connected
+Workspace. Altium's own documentation states that direct OutJob generation is
+per container; there is no single batch command for every output container.
+See [Preparing Manufacturing Data with Output Jobs](https://www.altium.com/documentation/altium-designer/preparing-for-manufacture/output-jobs)
+and [Design Project Release](https://www.altium.com/documentation/altium-designer/preparing-for-manufacture/design-release).
+
+Tracked reports: [#33](https://github.com/wavenumber-eng/altium_monkey/issues/33),
+[#34](https://github.com/wavenumber-eng/altium_monkey/issues/34), and
+[#61](https://github.com/wavenumber-eng/altium_monkey/issues/61).
 
 ## Install
 

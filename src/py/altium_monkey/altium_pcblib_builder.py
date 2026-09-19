@@ -50,8 +50,7 @@ from .altium_pcb_model_checksum import compute_altium_model_checksum
 from .altium_pcblib import (
     AltiumPcbFootprint,
     AltiumPcbLib,
-    _altium_ole_truncate,
-    _sanitize_ole_name,
+    _plan_pcblib_storage_names,
     _footprint_parameter_signature,
     _serialize_footprint_parameters,
     _sync_footprint_primitive_parameter_stream,
@@ -182,6 +181,52 @@ def _build_footprint_widestrings(strings: dict[int, str] | None = None) -> bytes
 
 def _build_primitive_guid_record(type_id: int, index: int, guid: uuid.UUID) -> bytes:
     return struct.pack("<II", type_id, index) + guid.bytes_le
+
+
+def _import_primitive_guid_records(
+    spec: "PcbLibFootprintSpec",
+    data: bytes | None,
+) -> None:
+    if data is None or len(data) % 24 != 0:
+        return
+    for offset in range(0, len(data), 24):
+        type_id, index = struct.unpack("<II", data[offset : offset + 8])
+        guid = uuid.UUID(bytes_le=data[offset + 8 : offset + 24])
+        if type_id == 0x55 and index == 0:
+            spec.component_guid = guid
+        elif index < len(spec.footprint._record_order):
+            primitive = spec.footprint._record_order[index]
+            if PcbLibBuilder._primitive_guid_type_id(primitive) == type_id:
+                spec.primitive_guids[primitive] = guid
+
+
+def _import_primitive_unique_id_records(
+    spec: "PcbLibFootprintSpec",
+    data: bytes | None,
+) -> None:
+    if data is None:
+        return
+    offset = 0
+    while offset + 4 <= len(data):
+        length = struct.unpack("<I", data[offset : offset + 4])[0]
+        end = offset + 4 + length
+        if end > len(data):
+            return
+        try:
+            body = data[offset + 4 : end].decode("ascii").rstrip("\x00")
+        except UnicodeDecodeError:
+            return
+        fields = dict(pair.split("=", 1) for pair in body.split("|") if "=" in pair)
+        try:
+            index = int(fields["PRIMITIVEINDEX"])
+            unique_id = fields["UNIQUEID"]
+        except (KeyError, ValueError):
+            return
+        if index < len(spec.footprint._record_order):
+            primitive = spec.footprint._record_order[index]
+            if isinstance(primitive, AltiumPcbPad):
+                spec.primitive_unique_ids[primitive] = unique_id
+        offset = end
 
 
 def _strip_record_terminator(value: str | None) -> str | None:
@@ -2585,6 +2630,10 @@ class PcbLibFootprintSpec:
     widestrings: dict[int, str] = field(default_factory=dict)
     primitive_guids: dict[object, uuid.UUID] = field(default_factory=dict)
     primitive_unique_ids: dict[object, str] = field(default_factory=dict)
+    preserved_primitive_guids: bytes | None = None
+    preserved_primitive_guids_header: bytes | None = None
+    preserved_uniqueid_info: bytes | None = None
+    preserved_uniqueid_info_header: bytes | None = None
 
 
 @dataclass
@@ -2847,17 +2896,83 @@ class PcbLibBuilder:
             item_guid=resolved_item_guid,
             revision_guid=resolved_revision_guid,
             component_guid=component_guid or uuid.uuid4(),
+            preserved_primitive_guids=(
+                owned_footprint.raw_primitive_guids if component_guid is None else None
+            ),
+            preserved_primitive_guids_header=(
+                owned_footprint.raw_primitive_guids_header
+                if component_guid is None
+                else None
+            ),
+            preserved_uniqueid_info=owned_footprint.raw_uniqueid_info,
+            preserved_uniqueid_info_header=owned_footprint.raw_uniqueid_info_header,
         )
 
         self._sync_footprint_widestrings(spec)
-        for primitive in owned_footprint._record_order:
-            self._ensure_primitive_guid(spec, primitive)
-            if isinstance(primitive, AltiumPcbPad):
-                self._ensure_primitive_unique_id(spec, primitive)
+        _import_primitive_guid_records(spec, owned_footprint.raw_primitive_guids)
+        _import_primitive_unique_id_records(spec, owned_footprint.raw_uniqueid_info)
+        if component_guid is not None:
+            spec.component_guid = component_guid
 
         self._footprints.append(spec)
         owned_footprint._bind_authoring_builder(self)
         return owned_footprint
+
+    def rename_footprint(
+        self,
+        footprint_or_name: AltiumPcbFootprint | str,
+        name: str,
+    ) -> AltiumPcbFootprint:
+        """Rename one footprint owned by this builder."""
+        footprint = self._resolve_owned_footprint(footprint_or_name)
+        if footprint.name == name:
+            return footprint
+
+        names = [
+            name if spec.footprint is footprint else spec.footprint.name
+            for spec in self._footprints
+        ]
+        _plan_pcblib_storage_names(names)
+        footprint_index = next(
+            index
+            for index, spec in enumerate(self._footprints)
+            if spec.footprint is footprint
+        )
+        candidate = copy.deepcopy(self)
+        candidate._apply_footprint_name(
+            candidate._footprints[footprint_index].footprint,
+            name,
+        )
+        candidate_library = candidate.build()
+        candidate_library._stage_pcblib_writer(preflight_container=True)
+        self._apply_footprint_name(footprint, name)
+        return footprint
+
+    def _resolve_owned_footprint(
+        self,
+        footprint_or_name: AltiumPcbFootprint | str,
+    ) -> AltiumPcbFootprint:
+        if isinstance(footprint_or_name, str):
+            for spec in self._footprints:
+                if spec.footprint.name == footprint_or_name:
+                    return spec.footprint
+            raise ValueError(
+                f"footprint {footprint_or_name!r} is not owned by this library"
+            )
+        if not isinstance(footprint_or_name, AltiumPcbFootprint):
+            raise ValueError("footprint is not owned by this library")
+        for spec in self._footprints:
+            if spec.footprint is footprint_or_name:
+                return footprint_or_name
+        raise ValueError("footprint is not owned by this library")
+
+    @staticmethod
+    def _apply_footprint_name(
+        footprint: AltiumPcbFootprint,
+        name: str,
+    ) -> None:
+        footprint.name = name
+        footprint.parameters["PATTERN"] = name
 
     @staticmethod
     def _mil_to_internal_units(value_mil: float) -> int:
@@ -2965,6 +3080,10 @@ class PcbLibBuilder:
         self, footprint: AltiumPcbFootprint, primitive: object
     ) -> None:
         spec = self._spec_for_footprint(footprint)
+        spec.preserved_primitive_guids = None
+        spec.preserved_primitive_guids_header = None
+        spec.preserved_uniqueid_info = None
+        spec.preserved_uniqueid_info_header = None
         if isinstance(primitive, AltiumPcbPad):
             footprint.pads.append(primitive)
         elif isinstance(primitive, AltiumPcbVia):
@@ -4012,16 +4131,12 @@ class PcbLibBuilder:
 
     def _assign_storage_names(self) -> bytes | None:
         entries: list[tuple[str, str]] = []
-        existing: set[str] = set()
-        for spec in self._footprints:
+        storage_names = _plan_pcblib_storage_names(
+            [spec.footprint.name for spec in self._footprints]
+        )
+        for spec, ole_name in zip(self._footprints, storage_names, strict=True):
             full_name = spec.footprint.name
-            sanitized = _sanitize_ole_name(full_name)
-            if len(sanitized) > 31:
-                ole_name = _altium_ole_truncate(sanitized, existing_keys=existing)
-            else:
-                ole_name = sanitized
             spec.footprint._ole_storage_name = ole_name
-            existing.add(ole_name)
             if ole_name != full_name:
                 entries.append((full_name, ole_name))
         if not entries:
@@ -4093,9 +4208,15 @@ class PcbLibBuilder:
             footprint.raw_header = struct.pack("<I", primitive_count)
             footprint.raw_parameters = _build_footprint_parameters(spec)
             footprint.raw_widestrings = _build_footprint_widestrings(spec.widestrings)
-            footprint.raw_primitive_guids = self._build_footprint_primitive_guids(spec)
-            footprint.raw_primitive_guids_header = struct.pack(
-                "<I", primitive_count + 1
+            footprint.raw_primitive_guids = (
+                spec.preserved_primitive_guids
+                if spec.preserved_primitive_guids is not None
+                else self._build_footprint_primitive_guids(spec)
+            )
+            footprint.raw_primitive_guids_header = (
+                spec.preserved_primitive_guids_header
+                if spec.preserved_primitive_guids_header is not None
+                else struct.pack("<I", primitive_count + 1)
             )
             if footprint.extended_primitive_information:
                 footprint.raw_extended_primitive_info = b"".join(
@@ -4116,11 +4237,19 @@ class PcbLibBuilder:
                         ),
                     )
                 )
-            footprint.raw_uniqueid_info = self._build_footprint_uniqueid_info(spec)
+            footprint.raw_uniqueid_info = (
+                spec.preserved_uniqueid_info
+                if spec.preserved_uniqueid_info is not None
+                else self._build_footprint_uniqueid_info(spec)
+            )
             footprint.raw_uniqueid_info_header = (
-                struct.pack("<I", len(footprint.pads))
-                if footprint.raw_uniqueid_info is not None
-                else None
+                spec.preserved_uniqueid_info_header
+                if spec.preserved_uniqueid_info is not None
+                else (
+                    struct.pack("<I", len(footprint.pads))
+                    if footprint.raw_uniqueid_info is not None
+                    else None
+                )
             )
             _sync_footprint_primitive_parameter_stream(footprint)
             _sync_footprint_via_structure_streams(footprint)

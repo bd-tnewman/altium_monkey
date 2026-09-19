@@ -13,13 +13,35 @@ The sample demonstrates the high-level runner path:
 prj = AltiumPrjPcb(PROJECT_FILE)
 result = prj.outjob().run(
     timeout_seconds=300,
+    stage_outjob_copy=False,
 )
 ```
 
 The project-bound OutJob handle launches Altium Designer, runs the OutJob
 script, and waits for a completion marker. Because the OutJob is part of the
 loaded project, the sample runs that associated OutJob directly in the working
-copy and lets Altium resolve the project documents from the PrjPcb.
+copy and lets Altium resolve the project documents from the PrjPcb. Do not
+remove the OutJob's `.PrjPcb` document entry: Altium can otherwise return
+without generating files.
+
+## Known Limitations
+
+The runner uses Altium's scripting process API. It is intended for the
+folder-based `GeneratedFiles` manufacturing outputs exercised by this sample.
+PDF/Publish document containers, schematic or PCB prints, and Draftsman output
+are not reliable through this bridge, and mixed-media OutJobs are not fully
+iterated.
+
+`result.success` confirms only that the generated script reached its completion
+marker without a reported script error. It does not count or validate output
+files. Production automation must check every expected Gerber, drill, netlist,
+or other artifact explicitly. For document/PDF outputs, or to run all OutJob
+containers using Altium's native orchestration, use the OutJob editor or
+Project Releaser.
+
+The sample sets `stage_outjob_copy=False` because it already creates a complete
+disposable project copy. Copying only the OutJob to a temporary path would make
+it differ from the logical OutJob document recorded by that copied `.PrjPcb`.
 
 ## Safe Prepare Mode
 
@@ -53,9 +75,9 @@ examples/outjob_runner/output/assets/projects/rt_super_c1/outputs/generated/
 ```
 
 The runner waits for the Altium script completion marker. That marker is
-written after `WorkspaceManager:GenerateReport` returns and the script closes
-the OutJob/project documents. It does not require the Altium `X2.exe` process
-to exit; Altium may remain open after the sample completes.
+written after `WorkspaceManager:GenerateReport` returns. It does not require
+the Altium `X2.exe` process to exit, and the script does not close the opened
+project documents; Altium may remain open after the sample completes.
 
 Temporary run scripts, marker files, and logs are written to:
 

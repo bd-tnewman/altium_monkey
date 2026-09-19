@@ -507,6 +507,18 @@ def _component_body_drawing_element_ids(
     return selectors or (body.source_object_id,)
 
 
+def _cached_component_body_drawing_element_ids(
+    cache: dict[tuple[str, str], tuple[str, ...]],
+    body: _BodyOccurrenceEvidence,
+) -> tuple[str, ...]:
+    key = (body.logical_document_id, body.source_object_id)
+    cached = cache.get(key)
+    if cached is None:
+        cached = _component_body_drawing_element_ids(body)
+        cache[key] = cached
+    return cached
+
+
 def _record_component_owned_drawing_elements(
     state: "_ProjectionState",
     body: _BodyOccurrenceEvidence,
@@ -555,22 +567,90 @@ def _is_redundant_local_net(
     net: AltiumCompiledNet,
     candidates: Sequence[AltiumCompiledNet],
     evidence_by_id: dict[str, frozenset[str]],
+    postings_by_document: dict[tuple[str, ...], dict[str, set[int]]],
+    first_index_by_signature: dict[tuple[tuple[str, ...], frozenset[str]], int],
 ) -> bool:
     evidence = evidence_by_id[net.id]
     if not evidence:
         return True
-    for other_index, other in enumerate(candidates):
-        if (
-            other_index == index
-            or other.physical_document_ids != net.physical_document_ids
-        ):
+    signature = (net.physical_document_ids, evidence)
+    if first_index_by_signature[signature] < index:
+        return True
+    candidate_indexes = _local_net_superset_candidate_indexes(
+        net,
+        evidence,
+        postings_by_document,
+    )
+    for other_index in candidate_indexes:
+        if other_index == index:
             continue
-        other_evidence = evidence_by_id[other.id]
-        if evidence < other_evidence or (
-            evidence == other_evidence and other_index < index
-        ):
+        other = evidence_by_id[candidates[other_index].id]
+        if len(other) > len(evidence) or other_index < index:
             return True
     return False
+
+
+def _local_net_selector_postings(
+    candidates: Sequence[AltiumCompiledNet],
+    evidence_by_id: dict[str, frozenset[str]],
+) -> tuple[
+    dict[tuple[str, ...], dict[str, set[int]]],
+    dict[tuple[tuple[str, ...], frozenset[str]], int],
+]:
+    postings_by_document: dict[tuple[str, ...], dict[str, set[int]]] = {}
+    first_index_by_signature: dict[tuple[tuple[str, ...], frozenset[str]], int] = {}
+    for index, net in enumerate(candidates):
+        evidence = evidence_by_id[net.id]
+        signature = (net.physical_document_ids, evidence)
+        if signature in first_index_by_signature:
+            continue
+        first_index_by_signature[signature] = index
+        postings = postings_by_document.setdefault(net.physical_document_ids, {})
+        for selector in evidence:
+            postings.setdefault(selector, set()).add(index)
+    return postings_by_document, first_index_by_signature
+
+
+def _local_net_superset_candidate_indexes(
+    net: AltiumCompiledNet,
+    evidence: frozenset[str],
+    postings_by_document: dict[tuple[str, ...], dict[str, set[int]]],
+) -> set[int]:
+    postings = postings_by_document.get(net.physical_document_ids, {})
+    ordered_selectors = sorted(
+        evidence,
+        key=lambda selector: (len(postings.get(selector, ())), selector),
+    )
+    if not ordered_selectors:
+        return set()
+    indexes = set(postings.get(ordered_selectors[0], ()))
+    for selector in ordered_selectors[1:]:
+        indexes.intersection_update(postings.get(selector, ()))
+        if not indexes:
+            break
+    return indexes
+
+
+def _nonredundant_local_nets(
+    candidates: Sequence[AltiumCompiledNet],
+    evidence_by_id: dict[str, frozenset[str]],
+) -> list[AltiumCompiledNet]:
+    postings_by_document, first_index_by_signature = _local_net_selector_postings(
+        candidates,
+        evidence_by_id,
+    )
+    return [
+        net
+        for index, net in enumerate(candidates)
+        if not _is_redundant_local_net(
+            index,
+            net,
+            candidates,
+            evidence_by_id,
+            postings_by_document,
+            first_index_by_signature,
+        )
+    ]
 
 
 def _scalar_physical_local_nets(
@@ -580,11 +660,7 @@ def _scalar_physical_local_nets(
 
     candidates = [net for net in compiled.nets if net.scope == "physical_local"]
     evidence_by_id = {net.id: _physical_local_net_evidence(net) for net in candidates}
-    return [
-        net
-        for index, net in enumerate(candidates)
-        if not _is_redundant_local_net(index, net, candidates, evidence_by_id)
-    ]
+    return _nonredundant_local_nets(candidates, evidence_by_id)
 
 
 @dataclass
@@ -821,6 +897,7 @@ def _build_component_rows(
 ) -> tuple[dict[tuple[str, str], str], dict[tuple[str, str], _BodyOccurrenceEvidence]]:
     component_by_body_and_page: dict[tuple[str, str], str] = {}
     body_by_page_and_source_uid: dict[tuple[str, str], _BodyOccurrenceEvidence] = {}
+    body_element_ids_by_source: dict[tuple[str, str], tuple[str, ...]] = {}
     for body in _expanded_component_body_evidence(state, component_body_evidence):
         _record_component_owned_drawing_elements(state, body)
         page_refs = state.page_occurrences_by_physical.get(
@@ -853,7 +930,9 @@ def _build_component_rows(
                     f"{page_ref}:{body.source_object_id}"
                 )
             body_by_page_and_source_uid[source_key] = body
-            for element_id in _component_body_drawing_element_ids(body):
+            for element_id in _cached_component_body_drawing_element_ids(
+                body_element_ids_by_source, body
+            ):
                 _add_graphical_link(
                     state,
                     page_ref=page_ref,

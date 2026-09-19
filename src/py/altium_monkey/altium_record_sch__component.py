@@ -2,6 +2,7 @@
 
 import copy
 
+from collections.abc import Iterable
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
@@ -2338,9 +2339,19 @@ class AltiumSchComponent(SchGraphicalObject):
         This mirrors :meth:`display_body_bounds_mils` and intentionally excludes
         pins and parameter/designator text.
         """
+        return self._display_body_element_ids_from_records(
+            self._display_body_records(part_id=part_id)
+        )
+
+    @staticmethod
+    def _display_body_element_ids_from_records(
+        records: Iterable[object],
+    ) -> list[str]:
+        """Return ordered visible selectors from already-admitted body records."""
+
         result: list[str] = []
         seen: set[str] = set()
-        for record in self._display_body_records(part_id=part_id):
+        for record in records:
             if getattr(record, "record_type", None) in {
                 SchRecordType.LABEL,
                 SchRecordType.NET_LABEL,

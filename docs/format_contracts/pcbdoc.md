@@ -288,6 +288,15 @@ overlay, layer-pair, and supported material/thickness fields on generated
 PcbDoc readback. `.csv` and `.esx` remain inspection/export artifacts rather
 than native writer inputs.
 
+Loss tangent is exposed through one typed `dielectric_loss_tangent` value even
+though Altium uses two storage forms. Standalone `.stackup` input treats
+`$LSM$LossTangent` as authoritative and accepts `DielLossTangent` as a
+compatibility fallback; native PcbDoc input retains `DielLossTangent` authority
+and accepts the LSM property when the native field is absent. A present invalid
+or non-finite authoritative value does not fall through to the alternate.
+Semantic `.stackup` output writes synchronized LSM and flattened forms, while
+raw `AltiumStackupDocument.to_text()` preserves the original record text.
+
 Programmatic rigid-board authoring uses the same document model. Use
 `AltiumLayerStackDocument.from_rigid_layer_rows(...)` with ordered
 `AltiumRigidStackRowSpec` rows when the exact physical sequence matters.

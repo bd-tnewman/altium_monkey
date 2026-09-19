@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Iterable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
@@ -19,7 +20,7 @@ from ._logical_source_identity import (
     _normalize_logical_source_identity,
 )
 from .altium_api_markers import public_api
-from .altium_dotnet_ordinal import dotnet_ordinal_ignore_case_key
+from .altium_text_semantics import altium_name_key
 from .altium_netlist_common import (
     _evaluate_altium_expression,
     _unique_nonempty_strings,
@@ -49,6 +50,7 @@ if TYPE_CHECKING:
         NetlistComponent,
         PnpEntry,
     )
+    from .altium_pcb_component import AltiumPcbComponent
     from .altium_pcbdoc import AltiumPcbDoc
     from .altium_prjpcb import AltiumPrjPcb
     from .altium_record_sch__component import AltiumSchComponent
@@ -150,11 +152,11 @@ def _coerce_variant_parameter_overrides(
     parameter_names: dict[str, dict[str, str]] = {}
 
     def add_override(designator: str, parameter: str, value: str) -> None:
-        designator_key = dotnet_ordinal_ignore_case_key(designator)
+        designator_key = altium_name_key(designator)
         selected_designator = designator_names.setdefault(designator_key, designator)
         selected_parameters = overrides.setdefault(selected_designator, {})
         selected_names = parameter_names.setdefault(designator_key, {})
-        parameter_key = dotnet_ordinal_ignore_case_key(parameter)
+        parameter_key = altium_name_key(parameter)
         selected_parameter = selected_names.setdefault(parameter_key, parameter)
         selected_parameters[selected_parameter] = value
 
@@ -237,10 +239,26 @@ def _variant_dnp_designators(variant_data: dict[str, object]) -> set[str]:
     return dnp_designators
 
 
+def _variant_rows_by_designator(
+    variant_data: dict[str, object] | None,
+) -> dict[str, Mapping[str, object]]:
+    """Index the latest physical variant row by resolved designator."""
+    rows: dict[str, Mapping[str, object]] = {}
+    raw_variations = (variant_data or {}).get("variations", [])
+    variations = raw_variations if isinstance(raw_variations, list) else []
+    for variation in variations:
+        if not isinstance(variation, dict):
+            continue
+        designator = str(_variant_field(variation, "Designator") or "").strip()
+        if designator:
+            rows[altium_name_key(designator)] = variation
+    return rows
+
+
 def _variant_field(values: Mapping[str, object], name: str) -> object | None:
-    key = dotnet_ordinal_ignore_case_key(name)
+    key = altium_name_key(name)
     for candidate, value in reversed(tuple(values.items())):
-        if dotnet_ordinal_ignore_case_key(str(candidate)) == key:
+        if altium_name_key(str(candidate)) == key:
             return value
     return None
 
@@ -249,9 +267,9 @@ def _case_insensitive_mapping_value[V](
     values: Mapping[str, V],
     name: str,
 ) -> V | None:
-    key = dotnet_ordinal_ignore_case_key(name)
+    key = altium_name_key(name)
     for candidate, value in values.items():
-        if dotnet_ordinal_ignore_case_key(candidate) == key:
+        if altium_name_key(candidate) == key:
             return value
     return None
 
@@ -267,7 +285,7 @@ def _variant_show_alternate_symbols(variant_data: dict[str, object] | None) -> b
         return True
     if type(value) is bool:
         return value
-    return dotnet_ordinal_ignore_case_key(str(value).strip()) in {
+    return altium_name_key(str(value).strip()) in {
         "1",
         "t",
         "true",
@@ -292,7 +310,7 @@ class _PhysicalVariantIndex:
         # designators cannot win, and the first surviving path keeps priority.
         for (logical_key, _), row in self._by_path.items():
             designator = str(_variant_field(row, "Designator") or "")
-            key = (logical_key, dotnet_ordinal_ignore_case_key(designator))
+            key = (logical_key, altium_name_key(designator))
             self._by_designator.setdefault(key, row)
 
     def _index_path(self, row: object) -> None:
@@ -302,8 +320,8 @@ class _PhysicalVariantIndex:
         separator = unique_id.rfind("\\")
         if separator < 0:
             return
-        logical_key = dotnet_ordinal_ignore_case_key(unique_id[separator + 1 :])
-        path_key = dotnet_ordinal_ignore_case_key(unique_id)
+        logical_key = altium_name_key(unique_id[separator + 1 :])
+        path_key = altium_name_key(unique_id)
         self._by_path[(logical_key, path_key)] = row
 
     def select(
@@ -313,12 +331,12 @@ class _PhysicalVariantIndex:
         unique_id_path: str,
         physical_designator: str,
     ) -> Mapping[str, object] | None:
-        logical_key = dotnet_ordinal_ignore_case_key(logical_unique_id)
-        path_key = dotnet_ordinal_ignore_case_key(unique_id_path)
+        logical_key = altium_name_key(logical_unique_id)
+        path_key = altium_name_key(unique_id_path)
         exact = self._by_path.get((logical_key, path_key))
         if exact is not None:
             return exact
-        designator_key = dotnet_ordinal_ignore_case_key(physical_designator)
+        designator_key = altium_name_key(physical_designator)
         return self._by_designator.get((logical_key, designator_key))
 
 
@@ -346,7 +364,7 @@ def _indexed_physical_variations(
     variant_data: dict[str, object],
     logical_unique_id: str,
 ) -> tuple[list[str], dict[str, Mapping[str, object]]]:
-    logical_key = dotnet_ordinal_ignore_case_key(logical_unique_id)
+    logical_key = altium_name_key(logical_unique_id)
     latest_by_unique_id: dict[str, Mapping[str, object]] = {}
     unique_id_order: list[str] = []
     raw_variations = variant_data.get("variations", [])
@@ -357,7 +375,7 @@ def _indexed_physical_variations(
         unique_id = str(_variant_field(row, "UniqueId") or "")
         if not _variation_targets_logical_id(unique_id, logical_key):
             continue
-        unique_key = dotnet_ordinal_ignore_case_key(unique_id)
+        unique_key = altium_name_key(unique_id)
         if unique_key not in latest_by_unique_id:
             unique_id_order.append(unique_key)
         latest_by_unique_id[unique_key] = row
@@ -366,10 +384,7 @@ def _indexed_physical_variations(
 
 def _variation_targets_logical_id(unique_id: str, logical_key: str) -> bool:
     separator = unique_id.rfind("\\")
-    return (
-        separator >= 0
-        and dotnet_ordinal_ignore_case_key(unique_id[separator + 1 :]) == logical_key
-    )
+    return separator >= 0 and altium_name_key(unique_id[separator + 1 :]) == logical_key
 
 
 def _select_indexed_physical_variation(
@@ -379,42 +394,143 @@ def _select_indexed_physical_variation(
     unique_id_path: str,
     physical_designator: str,
 ) -> Mapping[str, object] | None:
-    path_key = dotnet_ordinal_ignore_case_key(unique_id_path)
-    designator_key = dotnet_ordinal_ignore_case_key(physical_designator)
+    path_key = altium_name_key(unique_id_path)
+    designator_key = altium_name_key(physical_designator)
     fallback: Mapping[str, object] | None = None
     for unique_key in unique_id_order:
         row = latest_by_unique_id[unique_key]
         row_unique_id = str(_variant_field(row, "UniqueId") or "")
-        if dotnet_ordinal_ignore_case_key(row_unique_id) == path_key:
+        if altium_name_key(row_unique_id) == path_key:
             return row
         row_designator = str(_variant_field(row, "Designator") or "")
-        if (
-            fallback is None
-            and dotnet_ordinal_ignore_case_key(row_designator) == designator_key
-        ):
+        if fallback is None and altium_name_key(row_designator) == designator_key:
             fallback = row
     return fallback
 
 
 def _lookup_case_insensitive(values: dict[str, str], name: str) -> str | None:
-    lookup_key = dotnet_ordinal_ignore_case_key(name)
+    lookup_key = altium_name_key(name)
     for key, value in values.items():
-        if dotnet_ordinal_ignore_case_key(key) == lookup_key:
+        if altium_name_key(key) == lookup_key:
             return value
     return None
 
 
+def _pnp_comment_from_pcb_parameters(parameters: Mapping[str, object]) -> str:
+    """Return the PCB-cached value/comment used for placement output."""
+    for name in ("value", "Value", "comment", "Comment"):
+        value = parameters.get(name)
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
+def _pnp_comment_texts(pcbdoc: AltiumPcbDoc) -> dict[int, str]:
+    """Index the last component-owned PCB comment text by component row."""
+    comments: dict[int, str] = {}
+    for text in pcbdoc.texts:
+        component_index = text.component_index
+        if component_index is not None and text.is_comment:
+            comments[component_index] = str(text.text_content)
+    return comments
+
+
+def _pnp_dnp_designators(project: AltiumPrjPcb | None, variant: str | None) -> set[str]:
+    """Return physical designators omitted by the requested project variant."""
+    if not variant or project is None:
+        return set()
+    variant_data = project.variants.get(variant, {})
+    return {
+        designator
+        for variation in variant_data.get("variations", [])
+        if variation.get("Kind") == "1"
+        if (designator := variation.get("Designator", ""))
+    }
+
+
+def _pnp_unit_scale(units: str) -> float:
+    """Return the mil-to-output-unit scale for PnP coordinates."""
+    if units == "mm":
+        return 0.0254
+    if units == "mils":
+        return 1.0
+    raise ValueError(f"Unknown units: {units}. Use 'mm' or 'mils'.")
+
+
+def _pnp_component_is_included(
+    pcb_component: AltiumPcbComponent,
+    schematic_component: NetlistComponent | None,
+    *,
+    exclude_no_bom: bool,
+    use_schematic_metadata: bool,
+) -> bool:
+    """Apply the component-kind policy from the selected metadata authority."""
+    from .altium_component_kind import component_kind_includes_in_bom
+    from .altium_common_enums import ComponentKind
+
+    if not exclude_no_bom:
+        return True
+    if schematic_component is not None:
+        return component_kind_includes_in_bom(
+            ComponentKind(schematic_component.component_kind)
+        )
+    if use_schematic_metadata:
+        return True
+    return component_kind_includes_in_bom(pcb_component.component_kind)
+
+
+def _pnp_component_metadata(
+    pcb_component: AltiumPcbComponent,
+    schematic_component: NetlistComponent | None,
+    *,
+    pcb_comment: str | None,
+    use_schematic_metadata: bool,
+) -> tuple[str, str, dict[str, str]]:
+    """Project comment, description, and parameters from one authority."""
+    if schematic_component is not None:
+        return (
+            schematic_component.value,
+            schematic_component.description,
+            {
+                str(name): str(value)
+                for name, value in schematic_component.parameters.items()
+            },
+        )
+    parameters = {
+        str(name): str(value)
+        for name, value in (pcb_component.parameters or {}).items()
+    }
+    if use_schematic_metadata:
+        return "", pcb_component.description, parameters
+    parameters = {
+        name: value
+        for name, value in parameters.items()
+        if altium_name_key(name) != altium_name_key("Comment")
+    }
+    comment = (
+        _pnp_comment_from_pcb_parameters(pcb_component.parameters or {})
+        if pcb_comment is None
+        else pcb_comment
+    )
+    parameters["Comment"] = comment
+    return (
+        comment,
+        pcb_component.description,
+        parameters,
+    )
+
+
 def _set_case_insensitive_value(values: dict[str, str], name: str, value: str) -> None:
-    lookup_key = dotnet_ordinal_ignore_case_key(name)
+    lookup_key = altium_name_key(name)
     for existing_name in values:
-        if dotnet_ordinal_ignore_case_key(existing_name) == lookup_key:
+        if altium_name_key(existing_name) == lookup_key:
             values[existing_name] = value
             return
     values[name] = value
 
 
 _MANAGED_SYSTEM_PARAMETER_NAMES = frozenset(
-    dotnet_ordinal_ignore_case_key(name)
+    altium_name_key(name)
     for name in (
         "User defined",
         "CurrentTime",
@@ -457,13 +573,12 @@ _MANAGED_SYSTEM_PARAMETER_NAMES = frozenset(
     )
 )
 _MANAGED_VARIED_SYSTEM_PARAMETERS = frozenset(
-    dotnet_ordinal_ignore_case_key(name)
-    for name in ("Comment", "Description", "Footprint")
+    altium_name_key(name) for name in ("Comment", "Description", "Footprint")
 )
 
 
 def _managed_parameter_can_be_varied(name: str) -> bool:
-    key = dotnet_ordinal_ignore_case_key(name)
+    key = altium_name_key(name)
     return (
         key not in _MANAGED_SYSTEM_PARAMETER_NAMES
         or key in _MANAGED_VARIED_SYSTEM_PARAMETERS
@@ -474,13 +589,11 @@ def _update_case_insensitive_parameters(
     parameters: dict[str, str],
     overrides: Mapping[str, str],
 ) -> None:
-    varied_values = {
-        dotnet_ordinal_ignore_case_key(name): value for name, value in overrides.items()
-    }
+    varied_values = {altium_name_key(name): value for name, value in overrides.items()}
     for name in parameters:
         if not _managed_parameter_can_be_varied(name):
             continue
-        varied = varied_values.get(dotnet_ordinal_ignore_case_key(name))
+        varied = varied_values.get(altium_name_key(name))
         if varied is not None:
             parameters[name] = varied
 
@@ -649,6 +762,71 @@ def _bom_component_values(
     )
 
 
+def _bom_string_parameters(
+    parameters: Mapping[str, object] | None,
+) -> dict[str, str]:
+    """Return the public BOM parameter shape from one source mapping."""
+    return {
+        str(name): str(value)
+        for name, value in (parameters or {}).items()
+        if value is not None
+    }
+
+
+def _compiled_bom_designator(component: AltiumCompiledComponent) -> str:
+    """Return an admitted compiled BOM designator or an empty string."""
+    if (
+        not component.include_in_netlist
+        or not component.display_designator
+        or component.exclude_from_bom
+    ):
+        return ""
+    return component.display_designator
+
+
+def _compiled_bom_sheet(
+    component: AltiumCompiledComponent,
+    *,
+    physical_sheets: Mapping[str, str],
+    logical_sheets: Mapping[str, str],
+) -> str:
+    """Return the physical or logical source filename for a compiled row."""
+    return physical_sheets.get(component.physical_document_id) or logical_sheets.get(
+        component.logical_document_id, ""
+    )
+
+
+def _pcb_component_in_bom(component: AltiumPcbComponent) -> bool:
+    """Return whether one placed PCB component participates in a BOM."""
+    from .altium_component_kind import component_kind_includes_in_bom
+
+    return bool(component.designator) and component_kind_includes_in_bom(
+        component.component_kind
+    )
+
+
+def _pcb_bom_variation(
+    component: AltiumPcbComponent,
+    *,
+    variant_data: dict[str, object] | None,
+    variant_index: _PhysicalVariantIndex,
+    variant_by_designator: Mapping[str, Mapping[str, object]],
+) -> Mapping[str, object] | None:
+    """Select variant data using PCB source identity with designator fallback."""
+    source_segments = component.source_unique_id_segments
+    logical_unique_id = source_segments[-1] if source_segments else ""
+    variation = None
+    if variant_data is not None and logical_unique_id:
+        variation = variant_index.select(
+            logical_unique_id=logical_unique_id,
+            unique_id_path=component.source_unique_id,
+            physical_designator=component.designator,
+        )
+    if variation is not None:
+        return variation
+    return variant_by_designator.get(altium_name_key(component.designator))
+
+
 @public_api
 @dataclass
 class AltiumDesign:
@@ -678,6 +856,12 @@ class AltiumDesign:
     _compiled_design_allow_device_sheet_editing: bool | None = field(
         default=None,
         repr=False,
+    )
+    _compiled_source_documents: tuple[AltiumSchDoc, ...] = field(
+        default=(), repr=False, compare=False
+    )
+    _schematic_hierarchy_cache: dict[str, object] | None = field(
+        default=None, repr=False, compare=False
     )
     _options: NetlistOptions | None = None
     _load_mode: AltiumProjectLoadMode = field(
@@ -730,6 +914,7 @@ class AltiumDesign:
                 _load_mode=load_mode,
             )
 
+        from ._compiler_source import _compiler_document_source
         from .altium_schdoc import AltiumSchDoc
 
         schdoc_by_path: dict[Path, AltiumSchDoc] = {}
@@ -744,11 +929,18 @@ class AltiumDesign:
 
         schdoc_paths = project.get_reachable_schdoc_paths()
         schdocs = [load_schdoc(schdoc_path) for schdoc_path in schdoc_paths]
+        sources = [_compiler_document_source(schdoc) for schdoc in schdocs]
+        source_by_document_id = {
+            id(schdoc): source for schdoc, source in zip(schdocs, sources, strict=True)
+        }
         effective_scope = cls(
             project=project,
             schdocs=schdocs,
             _options=options,
-        )._resolve_design_effective_scope(options)
+        )._resolve_design_effective_scope(
+            options,
+            sources=sources,
+        )
         if effective_scope in {"HIERARCHICAL", "STRICT_HIERARCHICAL"}:
             saved_structure_paths = project.get_saved_structure_schdoc_paths()
             if saved_structure_paths:
@@ -767,11 +959,13 @@ class AltiumDesign:
                 schdocs = [load_schdoc(schdoc_path) for schdoc_path in all_schdoc_paths]
 
         # Sheet parameters are merged so later sheets can override earlier ones.
-        from ._compiler_source import _compiler_document_source
-
         sheet_params = {}
-        for schdoc in schdocs:
-            sheet_params.update(_compiler_document_source(schdoc).get_parameter_dict())
+        sources = [
+            source_by_document_id.get(id(schdoc)) or _compiler_document_source(schdoc)
+            for schdoc in schdocs
+        ]
+        for source in sources:
+            sheet_params.update(source.get_parameter_dict())
         options.sheet_parameters = sheet_params
 
         return cls(
@@ -856,19 +1050,33 @@ class AltiumDesign:
             or self._compiled_design_allow_device_sheet_editing
             != allow_device_sheet_editing
         ):
-            self._compiled_design = None
-            self._netlist = None
+            self._clear_compiled_caches()
         if self._compiled_design is None:
+            from ._compiler_source import _compiler_document_source
             from .altium_design_compiler import compile_design
 
-            self._compiled_design = compile_design(
+            sources = tuple(
+                _compiler_document_source(schdoc) for schdoc in self.schdocs
+            )
+            compiled = compile_design(
                 self,
                 allow_device_sheet_editing=allow_device_sheet_editing,
+                source_documents=sources,
             )
+            self._compiled_design = compiled
+            self._compiled_source_documents = sources
             self._compiled_design_allow_device_sheet_editing = (
                 allow_device_sheet_editing
             )
         return self._compiled_design
+
+    def _clear_compiled_caches(self) -> None:
+        self._compiled_design = None
+        self._compiled_design_allow_device_sheet_editing = None
+        self._compiled_source_documents = ()
+        self._schematic_hierarchy_cache = None
+        self._netlist = None
+        self._netlist_allow_device_sheet_editing = None
 
     def to_netlist(self, *, allow_device_sheet_editing: bool = False) -> Netlist:
         """
@@ -903,11 +1111,8 @@ class AltiumDesign:
         compiled = self.compile(allow_device_sheet_editing=allow_device_sheet_editing)
         self._netlist = compiled.to_netlist()
         self._netlist_allow_device_sheet_editing = allow_device_sheet_editing
-        from .altium_compiled_design_netlist import compiled_design_schematic_hierarchy
-
-        self._netlist.schematic_hierarchy = compiled_design_schematic_hierarchy(
-            compiled,
-            self.schdocs,
+        self._netlist.schematic_hierarchy = deepcopy(
+            self._canonical_schematic_hierarchy(compiled)
         )
 
     def to_json(
@@ -1329,7 +1534,7 @@ class AltiumDesign:
             component_id = str(getattr(component_record, "unique_id", "") or "")
             if component_id:
                 designator_record_by_component_id.setdefault(
-                    dotnet_ordinal_ignore_case_key(component_id), designator_record_id
+                    altium_name_key(component_id), designator_record_id
                 )
             logical_designator = str(component_info.designator or "")
             if logical_designator:
@@ -1445,7 +1650,7 @@ class AltiumDesign:
         if not resolved:
             return None
         record_id = designator_record_by_component_id.get(
-            dotnet_ordinal_ignore_case_key(component.source_object_id)
+            altium_name_key(component.source_object_id)
         )
         if not record_id and not has_body_evidence:
             record_id = designator_record_by_logical_designator.get(
@@ -1549,7 +1754,7 @@ class AltiumDesign:
         for info in sources:
             unique_id = str(info.record.unique_id or "")
             if unique_id:
-                by_id[dotnet_ordinal_ignore_case_key(unique_id)] = info.record
+                by_id[altium_name_key(unique_id)] = info.record
             designator = str(info.designator or "")
             if designator:
                 by_designator[designator] = info.record
@@ -1563,7 +1768,7 @@ class AltiumDesign:
         *,
         allow_designator_fallback: bool,
     ) -> AltiumSchComponent | None:
-        source = source_by_id.get(dotnet_ordinal_ignore_case_key(body.source_object_id))
+        source = source_by_id.get(altium_name_key(body.source_object_id))
         if source is None and allow_designator_fallback:
             return source_by_designator.get(body.logical_designator)
         return source
@@ -2061,15 +2266,11 @@ class AltiumDesign:
         """
         Build schematic hierarchy JSON for the design payload.
         """
+        if compiled is not None:
+            return deepcopy(self._canonical_schematic_hierarchy(compiled))
         hierarchy = getattr(netlist, "schematic_hierarchy", None)
         if isinstance(hierarchy, dict) and hierarchy:
-            return hierarchy
-        if compiled is not None:
-            from .altium_compiled_design_netlist import (
-                compiled_design_schematic_hierarchy,
-            )
-
-            return compiled_design_schematic_hierarchy(compiled, self.schdocs)
+            return deepcopy(hierarchy)
 
         from .altium_netlist_options import NetlistOptions
 
@@ -2097,6 +2298,21 @@ class AltiumDesign:
             "links": [],
             "unresolved": [],
         }
+
+    def _canonical_schematic_hierarchy(
+        self,
+        compiled: AltiumCompiledDesign,
+    ) -> dict[str, object]:
+        if self._schematic_hierarchy_cache is None:
+            from .altium_compiled_design_netlist import (
+                compiled_design_schematic_hierarchy,
+            )
+
+            self._schematic_hierarchy_cache = compiled_design_schematic_hierarchy(
+                compiled,
+                self._compiled_source_documents or self.schdocs,
+            )
+        return self._schematic_hierarchy_cache
 
     def _resolve_design_effective_scope(
         self,
@@ -2784,8 +3000,7 @@ class AltiumDesign:
         """
         Force regeneration of netlist (clear cache).
         """
-        self._netlist = None
-        self._compiled_design = None
+        self._clear_compiled_caches()
         return self.to_netlist()
 
     # ------------------------------------------------------------------
@@ -2947,19 +3162,29 @@ class AltiumDesign:
             )
         return variant_data, _coerce_variant_parameter_overrides(available[variant])
 
-    def to_bom(self, variant: str | None = None) -> list[dict]:
+    def to_bom(
+        self,
+        variant: str | None = None,
+        *,
+        use_pcb_data: bool = False,
+    ) -> list[dict]:
         """
-        Generate BOM from schematic components.
+        Generate a component BOM.
 
-                This extracts ALL components from the schematic with their parameters.
-                BOM data comes from schematic (not PCB) because:
-                1. Schematic is the canonical source for component data
-                2. Variants are defined at schematic level
-                3. Component parameters are stored on schematic symbols
+                The default projects logical component data directly from the
+                compiled schematic without building a netlist. Set
+                ``use_pcb_data=True`` for a no-compile manufacturing view of
+                components placed on the PcbDoc. PCB mode uses resolved Texts6
+                designators, PrimitiveParameters metadata, and PCB ComponentKind
+                filtering; graphical and no-BOM kinds are excluded. It assumes
+                the board is synchronized, can omit unplaced schematic parts,
+                and returns an empty ``sheet`` because it does not compile page
+                occurrences.
 
                 Args:
-                    variant: If specified, filter components by variant (DNP handling).
-                            If None, returns all components.
+                    variant: If specified, apply variant DNP and parameter data.
+                    use_pcb_data: If True, use only PCB-cached component facts and
+                        do not compile or join the schematic. Defaults to False.
 
                 Returns:
                     List of component dicts, each containing:
@@ -2971,57 +3196,123 @@ class AltiumDesign:
                     - parameters: Dict of all component parameters
                     - dnp: True if component is Do Not Populate in this variant
         """
-        compiled = self.compile()
-        netlist = self.to_netlist()
-        comp_data_map = self._build_component_data_map(netlist, compiled)
+        if use_pcb_data:
+            return self._to_pcb_bom(variant)
+        return self._to_schematic_bom(variant)
 
-        # Get DNP list for this variant (if specified)
-        parameter_overrides: dict[str, dict[str, str]] = {}
-        variant_data: dict[str, object] | None = None
-        if variant and self.project:
-            variant_data = self._variant_data(variant)
-            parameter_overrides = self.get_variant_parameter_overrides(variant)
+    def _bom_variant_selection(
+        self, variant: str | None
+    ) -> tuple[dict[str, object] | None, dict[str, dict[str, str]]]:
+        """Return optional variant rows and overrides for BOM projection."""
+        if not variant or self.project is None:
+            return None, {}
+        return self._variant_data(variant), self.get_variant_parameter_overrides(
+            variant
+        )
+
+    def _to_schematic_bom(self, variant: str | None) -> list[dict]:
+        """Project the compatibility BOM directly from compiled components."""
+        compiled = self.compile()
+        variant_data, parameter_overrides = self._bom_variant_selection(variant)
 
         variant_index = _PhysicalVariantIndex(variant_data)
-        result = []
-        for comp in netlist.components:
-            # GRAPHICAL, NET_TIE_NO_BOM, and STANDARD_NO_BOM are excluded.
-            if comp.exclude_from_bom:
+        physical_sheets = {
+            document.id: document.file_name for document in compiled.physical_documents
+        }
+        logical_sheets = {
+            document.id: document.file_name for document in compiled.logical_documents
+        }
+        context_by_designator: dict[str, AltiumCompiledComponent] = {}
+        for component in compiled.components:
+            if component.include_in_netlist and component.display_designator:
+                context_by_designator[component.display_designator] = component
+
+        result: list[dict] = []
+        for component in compiled.components:
+            designator = _compiled_bom_designator(component)
+            if not designator:
                 continue
 
-            component_context = comp_data_map.get(comp.designator, {})
+            component_context = context_by_designator[designator]
             variation = self._component_variation(
                 variant_data,
                 variant_index=variant_index,
-                logical_unique_id=str(component_context.get("source_unique_id") or ""),
-                unique_id_path=str(
-                    component_context.get("source_unique_id_path") or ""
-                ),
-                physical_designator=comp.designator,
+                logical_unique_id=component_context.source_object_id,
+                unique_id_path=component_context.source_unique_id_path,
+                physical_designator=designator,
             )
             values = _bom_component_values(
-                base_parameters=comp.parameters,
-                base_value=comp.value,
-                base_description=comp.description,
-                base_footprint=comp.footprint,
+                base_parameters=dict(component.parameters),
+                base_value=component.value,
+                base_description=component.description,
+                base_footprint=component.footprint,
                 variation=variation,
                 parameter_overrides=parameter_overrides,
                 project_parameters=self.project.parameters if self.project else None,
             )
 
-            # Use parameters from the compiled netlist component rather than
-            # reaching back into the source SchDoc.
-            component_data = {
-                "designator": comp.designator,
-                "value": values.value,
-                "footprint": values.footprint,
-                "library_ref": comp.library_ref,
-                "description": values.description,
-                "sheet": component_context.get("sheet", ""),
-                "parameters": values.parameters,
-                "dnp": values.dnp,
-            }
-            result.append(component_data)
+            result.append(
+                {
+                    "designator": designator,
+                    "value": values.value,
+                    "footprint": values.footprint,
+                    "library_ref": component.lib_reference,
+                    "description": values.description,
+                    "sheet": _compiled_bom_sheet(
+                        component_context,
+                        physical_sheets=physical_sheets,
+                        logical_sheets=logical_sheets,
+                    ),
+                    "parameters": values.parameters,
+                    "dnp": values.dnp,
+                }
+            )
+
+        return result
+
+    def _to_pcb_bom(self, variant: str | None) -> list[dict]:
+        """Project a manufacturing BOM from placed PCB component facts."""
+        pcbdoc = self._get_or_load_pcbdoc()
+        variant_data, parameter_overrides = self._bom_variant_selection(variant)
+        variant_index = _PhysicalVariantIndex(variant_data)
+        variant_by_designator = _variant_rows_by_designator(variant_data)
+        project_parameters = self.project.parameters if self.project else None
+
+        result: list[dict] = []
+        for component in pcbdoc.components:
+            if not _pcb_component_in_bom(component):
+                continue
+
+            designator = component.designator
+            variation = _pcb_bom_variation(
+                component,
+                variant_data=variant_data,
+                variant_index=variant_index,
+                variant_by_designator=variant_by_designator,
+            )
+
+            parameters = _bom_string_parameters(component.parameters)
+            values = _bom_component_values(
+                base_parameters=parameters,
+                base_value=_pnp_comment_from_pcb_parameters(component.parameters or {}),
+                base_description=component.description,
+                base_footprint=component.footprint,
+                variation=variation,
+                parameter_overrides=parameter_overrides,
+                project_parameters=project_parameters,
+            )
+            result.append(
+                {
+                    "designator": designator,
+                    "value": values.value,
+                    "footprint": values.footprint,
+                    "library_ref": component.source_lib_reference,
+                    "description": values.description,
+                    "sheet": "",
+                    "parameters": values.parameters,
+                    "dnp": values.dnp,
+                }
+            )
 
         return result
 
@@ -3220,17 +3511,25 @@ class AltiumDesign:
         units: str = "mm",
         exclude_no_bom: bool = False,
         position_mode: PnpPositionMode | str = PNP_POSITION_MODE_ALTIUM_PICK_PLACE,
+        use_schematic_metadata: bool = False,
     ) -> list[PnpEntry]:
         """
         Generate Pick-and-Place data from PCB.
 
-                PcbDoc data is loaded on demand so BOM-only workflows do not pay the
-                parse cost of the PCB file. The default ``altium-pick-place``
-                position mode matches Altium's Pick Place export: it uses the
-                center of the bounding box of component-owned pad anchor points
-                and falls back to the component origin when no pads exist.
-                ``component-origin`` returns the footprint placement origin
-                directly.
+                Placement and metadata come from the PcbDoc by default, so this
+                operation does not compile the schematic. The physical designator
+                and comment are the component-owned Texts6 values, while other
+                parameters come from the PCB PrimitiveParameters stream. Set
+                ``use_schematic_metadata=True`` to retain the earlier behavior of
+                joining compiled schematic value, description, parameters, and
+                component kind by physical designator.
+
+                PcbDoc data is loaded on demand. The default
+                ``altium-pick-place`` position mode matches Altium's Pick Place
+                export: it uses the center of the bounding box of component-owned
+                pad anchor points and falls back to the component origin when no
+                pads exist. ``component-origin`` returns the footprint placement
+                origin directly.
 
                 Args:
                     variant: If specified, filter components by variant (DNP handling).
@@ -3240,6 +3539,9 @@ class AltiumDesign:
                                    Default False because PnP may need mechanical placements.
                     position_mode: "altium-pick-place" (default) or
                                    "component-origin".
+                    use_schematic_metadata: If True, compile the schematic and
+                        replace PCB metadata with matching schematic metadata.
+                        Defaults to False.
 
                 Returns:
                     List of PnpEntry objects with position/rotation data.
@@ -3247,37 +3549,22 @@ class AltiumDesign:
                 Raises:
                     ValueError: If no PcbDoc found in project.
         """
-        self._require_schematic_capability("pick-and-place generation")
-
-        from .altium_component_kind import component_kind_includes_in_bom
-        from .altium_common_enums import ComponentKind
         from .altium_netlist_model import PnpEntry
+
+        if use_schematic_metadata:
+            self._require_schematic_capability("schematic-backed pick-and-place")
 
         # Lazy-load PcbDoc on first call
         pcbdoc = self._get_or_load_pcbdoc()
 
-        # Build BOM lookup for schematic data (parameters, description, etc.)
-        # Use netlist components which have parameters populated
-        netlist = self.to_netlist()
-        bom_lookup = {comp.designator: comp for comp in netlist.components}
+        bom_lookup: dict[str, NetlistComponent] = {}
+        if use_schematic_metadata:
+            netlist = self.to_netlist()
+            bom_lookup = {comp.designator: comp for comp in netlist.components}
 
-        # Get DNP list for this variant (if specified)
-        dnp_set: set[str] = set()
-        if variant and self.project:
-            variant_data = self.project.variants.get(variant, {})
-            for variation in variant_data.get("variations", []):
-                if variation.get("Kind") == "1":  # Kind=1 means Not Fitted
-                    designator = variation.get("Designator", "")
-                    if designator:
-                        dnp_set.add(designator)
-
-        # Unit conversion factor (mils to mm: 1 mil = 0.0254 mm)
-        if units == "mm":
-            scale = 0.0254
-        elif units == "mils":
-            scale = 1.0
-        else:
-            raise ValueError(f"Unknown units: {units}. Use 'mm' or 'mils'.")
+        dnp_set = _pnp_dnp_designators(self.project, variant)
+        pcb_comments = _pnp_comment_texts(pcbdoc)
+        scale = _pnp_unit_scale(units)
 
         normalized_position_mode = normalize_pnp_position_mode(position_mode)
         result: list[PnpEntry] = []
@@ -3288,17 +3575,13 @@ class AltiumDesign:
             if designator in dnp_set:
                 continue
 
-            # Get schematic data for this component (if available)
             sch_comp = bom_lookup.get(designator)
 
-            # Optionally filter based on ComponentKind from schematic
-            # Default: include all (PnP may need mechanical placements)
-            if (
-                exclude_no_bom
-                and sch_comp
-                and not component_kind_includes_in_bom(
-                    ComponentKind(sch_comp.component_kind)
-                )
+            if not _pnp_component_is_included(
+                pcb_comp,
+                sch_comp,
+                exclude_no_bom=exclude_no_bom,
+                use_schematic_metadata=use_schematic_metadata,
             ):
                 continue
 
@@ -3318,22 +3601,23 @@ class AltiumDesign:
             # Use AltiumPcbComponent's rotation method
             rotation = pcb_comp.get_rotation_degrees()
 
-            # Build PnP entry with type-safe dataclass
+            comment, description, parameters = _pnp_component_metadata(
+                pcb_comp,
+                sch_comp,
+                pcb_comment=pcb_comments.get(component_index),
+                use_schematic_metadata=use_schematic_metadata,
+            )
+
             pnp_entry = PnpEntry(
                 designator=designator,
-                comment=sch_comp.value if sch_comp else "",
+                comment=comment,
                 layer=layer,
                 footprint=pcb_comp.footprint,
                 center_x=center_x,
                 center_y=center_y,
                 rotation=rotation,
-                description=sch_comp.description if sch_comp else pcb_comp.description,
-                parameters={
-                    str(key): str(value)
-                    for key, value in (
-                        sch_comp.parameters if sch_comp else (pcb_comp.parameters or {})
-                    ).items()
-                },
+                description=description,
+                parameters=parameters,
             )
             result.append(pnp_entry)
 

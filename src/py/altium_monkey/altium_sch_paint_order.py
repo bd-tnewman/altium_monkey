@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from enum import Enum
 from itertools import islice, pairwise
 
-from .altium_dotnet_ordinal import dotnet_ordinal_ignore_case_key
+from .altium_text_semantics import altium_name_key
 from ._sch_source_admission import _SourceAdmission
 from ._sch_source_projection import (
     _component_bound_field_slots,
@@ -959,14 +959,12 @@ def _plan_component_variant_paint(
     )
     if state.has_variant_component and state.variant_component_present:
         parameter_names = {
-            dotnet_ordinal_ignore_case_key(name)
-            for name in state.variant_parameter_names
+            altium_name_key(name) for name in state.variant_parameter_names
         }
         objects = [
             item
             for item in objects
-            if item.kind != "parameter"
-            or dotnet_ordinal_ignore_case_key(item.name) in parameter_names
+            if item.kind != "parameter" or altium_name_key(item.name) in parameter_names
         ]
     return (
         *(item.token for item in objects),
@@ -1051,7 +1049,7 @@ def _component_field_role(child: object) -> str | None:
         return "designator"
     if (
         isinstance(child, AltiumSchParameter)
-        and dotnet_ordinal_ignore_case_key(child.name) == "COMMENT"
+        and altium_name_key(child.name) == "COMMENT"
     ):
         return "comment"
     return None

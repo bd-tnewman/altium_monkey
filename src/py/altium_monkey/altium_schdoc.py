@@ -37,7 +37,7 @@ from .altium_json_apply_helpers import (
     json_record_from_object,
     load_bounded_json_source,
 )
-from .altium_dotnet_ordinal import dotnet_ordinal_ignore_case_key
+from .altium_text_semantics import altium_name_key
 from .altium_sch_display_mode import (
     pin_belongs_to_component_view,
     pin_is_managed_part_member,
@@ -310,8 +310,8 @@ def _optional_int(value: object) -> int | None:
 
 _PIN_STATE_PARAMETER_NAMES = frozenset(
     {
-        dotnet_ordinal_ignore_case_key("DefaultNet"),
-        dotnet_ordinal_ignore_case_key("HiddenNetName"),
+        altium_name_key("DefaultNet"),
+        altium_name_key("HiddenNetName"),
     }
 )
 
@@ -323,7 +323,7 @@ def _apply_pin_state_parameters(objects: Iterable[object]) -> None:
         elif isinstance(obj, AltiumSchParameter):
             parent = getattr(obj, "parent", None)
             if isinstance(parent, AltiumSchPin) and (
-                dotnet_ordinal_ignore_case_key(obj.name) in _PIN_STATE_PARAMETER_NAMES
+                altium_name_key(obj.name) in _PIN_STATE_PARAMETER_NAMES
             ):
                 parent.hidden_net_name = obj.text
 

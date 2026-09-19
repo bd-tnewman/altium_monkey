@@ -1,6 +1,6 @@
-"""Generated .NET 8 en-US simple-lower mapping for UTF-16 code units."""
+"""Frozen en-US simple-lower mapping used by Altium alphanumeric order."""
 
-MANAGED_LOWER_RANGES = (
+ALTIUM_LOWER_RANGES = (
     (0x0041, 0x005A, 1, 32),
     (0x00C0, 0x00D6, 1, 32),
     (0x00D8, 0x00DE, 1, 32),
@@ -81,7 +81,7 @@ MANAGED_LOWER_RANGES = (
     (0xFF21, 0xFF3A, 1, 32),
 )
 
-MANAGED_LOWER_SINGLETONS = (
+ALTIUM_LOWER_SINGLETONS = (
     (0x0130, 0x0069),
     (0x0178, 0x00FF),
     (0x0181, 0x0253),
