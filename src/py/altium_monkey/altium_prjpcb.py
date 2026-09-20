@@ -1062,6 +1062,7 @@ class AltiumPrjPcb:
         self.config.optionxform = _preserve_option_case
         self.documents: list[DocumentEntry] = []
         self._document_source_sections: dict[int, str] = {}
+        self._duplicate_document_source_sections: set[str] = set()
         self._loaded_encoding: str | None = None
         self._source_lines: list[str] = []
 
@@ -1091,7 +1092,8 @@ class AltiumPrjPcb:
         """
         self.documents = []
         self._document_source_sections = {}
-        identities: set[str] = set()
+        self._duplicate_document_source_sections = set()
+        identities: dict[str, str] = {}
         doc_num = 1
 
         while True:
@@ -1104,9 +1106,12 @@ class AltiumPrjPcb:
             options = [(key, value) for key, value in self.config.items(section)]
             normalized = _normalize_project_document_identity(doc_path)
             identity = _logical_source_identity_key(normalized)
-            if identity in identities:
-                raise ValueError(f"duplicate project document path: {doc_path}")
-            identities.add(identity)
+            first_section = identities.get(identity)
+            if first_section is not None:
+                self._ignore_duplicate_document(section, first_section, normalized)
+                doc_num += 1
+                continue
+            identities[identity] = section
 
             self.documents.append(
                 {
@@ -1136,9 +1141,11 @@ class AltiumPrjPcb:
                 continue
             normalized = _normalize_project_document_identity(doc_path)
             identity = _logical_source_identity_key(normalized)
-            if identity in identities:
-                raise ValueError(f"duplicate project document path: {doc_path}")
-            identities.add(identity)
+            first_section = identities.get(identity)
+            if first_section is not None:
+                self._ignore_duplicate_document(section, first_section, normalized)
+                continue
+            identities[identity] = section
             options = [(key, value) for key, value in self.config.items(section)]
             document: DocumentEntry = {
                 "path": doc_path,
@@ -1151,6 +1158,17 @@ class AltiumPrjPcb:
             }
             self.documents.append(document)
             self._document_source_sections[id(document)] = section
+
+    def _ignore_duplicate_document(
+        self, section: str, first_section: str, normalized_path: str
+    ) -> None:
+        self._duplicate_document_source_sections.add(section)
+        log.warning(
+            "Ignoring duplicate PrjPcb document path %r in [%s]; using project member [%s]",
+            normalized_path,
+            section,
+            first_section,
+        )
 
     def add_document(self, path: str | Path, unique_id: str | None = None) -> None:
         """
@@ -1196,6 +1214,8 @@ class AltiumPrjPcb:
                 break
             self.config.remove_section(section)
             doc_num += 1
+
+        self._remove_duplicate_document_sections()
 
     def set_documents_from_directory(
         self, directory: Path, pattern: str = "*.SchDoc"
@@ -1287,6 +1307,8 @@ class AltiumPrjPcb:
             self.config.remove_section(section)
             doc_num += 1
 
+        self._remove_duplicate_document_sections()
+
         # Add document sections
         writable_documents = (
             document
@@ -1330,6 +1352,11 @@ class AltiumPrjPcb:
         # Write to file with UTF-8 BOM (Altium standard)
         with open(filepath, "w", encoding="utf-8-sig") as f:
             self.config.write(f, space_around_delimiters=False)
+
+    def _remove_duplicate_document_sections(self) -> None:
+        for section in self._duplicate_document_source_sections:
+            self.config.remove_section(section)
+        self._duplicate_document_source_sections.clear()
 
     @classmethod
     def create_minimal(cls, name: str = "project") -> AltiumPrjPcb:

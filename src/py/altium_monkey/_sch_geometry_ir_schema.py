@@ -88,6 +88,7 @@ SCH_GEOMETRY_IR_SCHEMA_JSON = r"""{
     },
     "records": {
       "type": "array",
+      "description": "Per-target geometry evidence. Product-generated documents use effective document encounter order for identity-aware paint-group construction. Managed interop-oracle captures instead sort isolated targets by kind and handle, so their outer record order is not paint order. Consumers must know the producer contract before using this array for whole-document rendering.",
       "items": {"$ref": "#/$defs/record"}
     }
   },
@@ -244,6 +245,7 @@ SCH_GEOMETRY_IR_SCHEMA_JSON = r"""{
         "operation_count": {"type": "integer", "minimum": 0},
         "operations": {
           "type": "array",
+          "description": "Effective owner-local geometry construction sequence. Consumers preserve transform and clip call order, then apply managed group storage semantics: direct items paint before child groups, and duplicate sibling group identities keep the first slot and first nonempty body.",
           "items": {"$ref": "#/$defs/operation"}
         },
         "error": {"type": "string"},

@@ -1,3 +1,24 @@
+# altium-monkey 2026.09.19 Release Notes
+
+Package version: `2026.9.19`
+
+This maintenance release makes existing projects with duplicate document
+entries load deterministically and advances the supported Geometer runtime.
+
+## Changes
+
+- Fixed project loading for existing `.PrjPcb` files that contain duplicate
+  normalized `DocumentPath` entries. The first entry in project-membership
+  order is used deterministically, a warning identifies ignored sections, and
+  authoring APIs continue to reject new duplicates.
+- Updated the required native geometry package from
+  `wn-geometer==2026.9.13` to `wn-geometer==2026.9.19`. The newer runtime adds
+  deterministic B0 half-space clipping and advances its supported native,
+  IPC, and static SDK artifacts. Altium Monkey's existing STEP-bounds API
+  remains source compatible.
+
+---
+
 # altium-monkey 2026.09.18 Release Notes
 
 Package version: `2026.9.18`
