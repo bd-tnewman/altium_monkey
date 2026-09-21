@@ -1808,6 +1808,8 @@ class AltiumSchDoc(JsonApplyMixin):
             SchRecordType.MAP_DEFINER_LIST,
             SchRecordType.IMPL_PARAMS,
             SchRecordType.PORT,
+            SchRecordType.POWER_PORT,
+            SchRecordType.SHEET_ENTRY,
             SchRecordType.HARNESS_CONNECTOR,
             SchRecordType.HARNESS_SPLICE,
             SchRecordType.HARNESS_LAYOUT_LABEL,

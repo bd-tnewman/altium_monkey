@@ -1,3 +1,21 @@
+# altium-monkey 2026.09.21 Release Notes
+
+Package version: `2026.9.21`
+
+This compatibility release fixes loading of valid schematic cross-reference
+ownership produced by current Altium versions.
+
+## Changes
+
+- Fixed SchDoc loading for persisted `CrossRef` parameters owned by
+  cross-sheet connectors or sheet entries. The owner relationship, raw owner
+  index, parameter value, and unrelated document streams are preserved across
+  load/save/reopen.
+- Retained strict structural checks for unresolved, forward, cross-domain, and
+  otherwise unreviewed owner relationships.
+
+---
+
 # altium-monkey 2026.09.19 Release Notes
 
 Package version: `2026.9.19`
