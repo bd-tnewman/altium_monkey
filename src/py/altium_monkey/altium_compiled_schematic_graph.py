@@ -69,7 +69,7 @@ _REF_LIST_TYPES: dict[str, tuple[tuple[str, str], ...]] = {
     "unit_definitions": (("page_definition_refs", "sch.page_definition"),),
     "unit_occurrences": (("page_occurrence_refs", "sch.page_occurrence"),),
 }
-_TERMINAL_ROLES = {"component_pin", "sheet_entry", "port", "power_port"}
+_TERMINAL_ROLES = {"component_pin", "harness_entry", "sheet_entry", "port", "power_port"}  # fmt: skip
 _RESOLUTION_DIAGNOSTICS = {
     "logical_pin_unresolved",
     "component_occurrence_unresolved",

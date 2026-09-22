@@ -467,9 +467,9 @@ def _drawing_element_id(
     """Return the retained DwgScene selector for compiled net evidence."""
 
     role = str(getattr(value, "role", "") or "")
-    if role in {"harness_entry", "harness_port"}:
+    if role == "harness_port":
         return ""
-    if role in {"sheet_entry", "port", "power_port"}:
+    if role in {"harness_entry", "sheet_entry", "port", "power_port"}:
         return str(
             getattr(value, "object_id", "") or getattr(value, "element_id", "") or ""
         )
@@ -479,6 +479,7 @@ def _drawing_element_id(
     # evidence only and must not become graphical-artifact links.
     kind = str(getattr(value, "kind", "") or "")
     if getattr(value, "removed", False) or kind in {
+        "harness_entry",
         "harness_port",
         "sheet_entry",
         "port",
@@ -947,13 +948,24 @@ def _aggregate_net_elements(
     nets: Sequence[AltiumCompiledNet],
 ) -> set[tuple[str, str]]:
     net_ids_by_element: dict[tuple[str, str], set[str]] = defaultdict(set)
+    explicit_aggregate_elements: set[tuple[str, str]] = set()
     for net in nets:
         physical_id = net.physical_document_ids[0]
         for value in (*net.endpoints, *net.items):
-            element_id = _graphical_element_id(value)
-            if element_id:
-                net_ids_by_element[(physical_id, element_id)].add(net.id)
-    return {key for key, net_ids in net_ids_by_element.items() if len(net_ids) > 1}
+            graphical_id = _graphical_element_id(value)
+            object_id = (
+                str(getattr(value, "object_id", "") or "")
+                if getattr(value, "role", "")
+                else ""
+            )
+            for element_id in {graphical_id, object_id} - {""}:
+                key = (physical_id, element_id)
+                net_ids_by_element[key].add(net.id)
+                if getattr(value, "role", "") == "harness_port":
+                    explicit_aggregate_elements.add(key)
+    return explicit_aggregate_elements | {
+        key for key, net_ids in net_ids_by_element.items() if len(net_ids) > 1
+    }
 
 
 def _component_pin_terminal_row(
@@ -1059,6 +1071,59 @@ def _boundary_terminal_row(
     )
 
 
+def _boundary_endpoint_is_aggregate(
+    endpoint: AltiumCompiledNetEndpoint,
+    physical_id: str,
+    aggregate_elements: set[tuple[str, str]],
+) -> bool:
+    connectivity_id = _graphical_element_id(endpoint)
+    source_uuid = str(endpoint.object_id or endpoint.element_id or "")
+    return (physical_id, connectivity_id) in aggregate_elements or (
+        physical_id,
+        source_uuid,
+    ) in aggregate_elements
+
+
+def _retain_boundary_endpoint(
+    role: str,
+    source_uuid: str,
+    retained_harness_entry_ids: set[str],
+) -> bool:
+    if role != "harness_entry":
+        return True
+    if source_uuid in retained_harness_entry_ids:
+        return False
+    retained_harness_entry_ids.add(source_uuid)
+    return True
+
+
+def _append_boundary_terminal_rows(
+    state: _ProjectionState,
+    *,
+    net: AltiumCompiledNet,
+    physical_id: str,
+    page_ref: str,
+    aggregate_elements: set[tuple[str, str]],
+    rows: list[dict[str, object]],
+    row_by_page_element: dict[tuple[str, str], dict[str, object]],
+) -> None:
+    retained_harness_entry_ids: set[str] = set()
+    for endpoint in net.endpoints:
+        role = str(endpoint.role or "")
+        if role not in {"harness_entry", "sheet_entry", "port", "power_port"}:
+            continue
+        source_uuid = str(endpoint.object_id or endpoint.element_id or "")
+        if _boundary_endpoint_is_aggregate(endpoint, physical_id, aggregate_elements):
+            continue
+        if not _retain_boundary_endpoint(role, source_uuid, retained_harness_entry_ids):
+            continue
+        row = _boundary_terminal_row(state, endpoint, page_ref)
+        rows.append(row)
+        drawing_id = _drawing_element_id(endpoint)
+        if drawing_id:
+            row_by_page_element[(page_ref, drawing_id)] = row
+
+
 def _collect_net_page_terminals(
     state: _ProjectionState,
     *,
@@ -1101,17 +1166,15 @@ def _collect_net_page_terminals(
                 target_ref=row["id"],
                 element_id=element_id,
             )
-    for endpoint in net.endpoints:
-        if str(endpoint.role or "") not in {"sheet_entry", "port", "power_port"}:
-            continue
-        connectivity_id = _graphical_element_id(endpoint)
-        if (physical_id, connectivity_id) in aggregate_elements:
-            continue
-        row = _boundary_terminal_row(state, endpoint, page_ref)
-        rows.append(row)
-        drawing_id = _drawing_element_id(endpoint)
-        if drawing_id:
-            row_by_page_element[(page_ref, drawing_id)] = row
+    _append_boundary_terminal_rows(
+        state,
+        net=net,
+        physical_id=physical_id,
+        page_ref=page_ref,
+        aggregate_elements=aggregate_elements,
+        rows=rows,
+        row_by_page_element=row_by_page_element,
+    )
     return rows
 
 
@@ -1210,7 +1273,10 @@ def _drawing_target(
     aggregate_elements: set[tuple[str, str]],
     terminal_by_page_element: dict[tuple[str, str], dict[str, object]],
 ) -> tuple[str, str]:
-    if (physical_id, connectivity_id) in aggregate_elements:
+    if (physical_id, connectivity_id) in aggregate_elements or (
+        physical_id,
+        drawing_id,
+    ) in aggregate_elements:
         return "sch.page_occurrence", page_ref
     terminal = terminal_by_page_element.get((page_ref, drawing_id))
     if terminal is not None:

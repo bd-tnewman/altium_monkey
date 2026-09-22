@@ -1,3 +1,19 @@
+# altium-monkey 2026.09.22 Release Notes
+
+Package version: `2026.9.22`
+
+This compatibility release fixes harness-entry topology in compiled schematic
+graphs used by downstream design and visualization tools.
+
+## Changes
+
+- Fixed compiled schematic graphs omitting individual harness-entry terminals
+  and their drawing links. Each entry now retains its exact page-local net and
+  source identity, while shared harness ports and connector selectors remain
+  page-scoped instead of being assigned to an arbitrary scalar member net.
+
+---
+
 # altium-monkey 2026.09.21 Release Notes
 
 Package version: `2026.9.21`
