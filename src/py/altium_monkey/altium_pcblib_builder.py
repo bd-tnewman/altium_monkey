@@ -3076,6 +3076,79 @@ class PcbLibBuilder:
             records.extend(body)
         return bytes(records) if records else None
 
+    def _attach_parsed_footprint(
+        self, footprint: AltiumPcbFootprint
+    ) -> PcbLibFootprintSpec:
+        """
+        Register a parsed footprint for in-place primitive edits.
+
+        Unlike `add_existing_footprint`, the footprint's parameters are left
+        untouched and its stored GUIDs and unique ids are imported by primitive.
+        """
+        params = footprint.parameters
+        spec = PcbLibFootprintSpec(
+            footprint=footprint,
+            height=params.get("HEIGHT", "0mil"),
+            description=params.get("DESCRIPTION", ""),
+            item_guid=params.get("ITEMGUID", ""),
+            revision_guid=params.get("REVISIONGUID", ""),
+            preserved_primitive_guids=footprint.raw_primitive_guids,
+            preserved_primitive_guids_header=footprint.raw_primitive_guids_header,
+            preserved_uniqueid_info=footprint.raw_uniqueid_info,
+            preserved_uniqueid_info_header=footprint.raw_uniqueid_info_header,
+        )
+        _import_primitive_guid_records(spec, footprint.raw_primitive_guids)
+        _import_primitive_unique_id_records(spec, footprint.raw_uniqueid_info)
+        self._footprints.append(spec)
+        footprint._bind_authoring_builder(self)
+        return spec
+
+    def _forget_primitive(
+        self, footprint: AltiumPcbFootprint, primitive: object
+    ) -> None:
+        spec = self._spec_for_footprint(footprint)
+        spec.preserved_primitive_guids = None
+        spec.preserved_primitive_guids_header = None
+        spec.preserved_uniqueid_info = None
+        spec.preserved_uniqueid_info_header = None
+        spec.primitive_guids.pop(primitive, None)
+        spec.primitive_unique_ids.pop(primitive, None)
+
+    def _parsed_footprint_side_streams(
+        self, spec: PcbLibFootprintSpec
+    ) -> dict[str, bytes | None]:
+        """
+        Index-dependent side streams of one footprint, generated from its
+        current primitives. Compared against the pre-edit generation so only
+        streams an edit actually changed replace the source bytes.
+        """
+        footprint = spec.footprint
+        footprint._reindex_extended_primitive_information()
+        count = len(footprint._record_order)
+        self._sync_footprint_widestrings(spec)
+        uniqueid = self._build_footprint_uniqueid_info(spec)
+        streams: dict[str, bytes | None] = {
+            "raw_header": struct.pack("<I", count),
+            "raw_widestrings": _build_footprint_widestrings(spec.widestrings),
+            "raw_primitive_guids": self._build_footprint_primitive_guids(spec),
+            "raw_primitive_guids_header": struct.pack("<I", count + 1),
+            "raw_uniqueid_info": uniqueid,
+            "raw_uniqueid_info_header": (
+                struct.pack("<I", len(footprint.pads)) if uniqueid is not None else None
+            ),
+        }
+        if footprint.raw_extended_primitive_info is not None or (
+            footprint.extended_primitive_information
+        ):
+            items = footprint.extended_primitive_information
+            streams["raw_extended_primitive_info"] = b"".join(
+                item.serialize_record() for item in items
+            )
+            streams["raw_extended_primitive_info_header"] = struct.pack(
+                "<I", len(items)
+            )
+        return streams
+
     def _append_primitive(
         self, footprint: AltiumPcbFootprint, primitive: object
     ) -> None:
@@ -4202,6 +4275,7 @@ class PcbLibBuilder:
 
         for spec in self._footprints:
             footprint = spec.footprint
+            footprint._reindex_extended_primitive_information()
             primitive_count = len(footprint._record_order)
             self._sync_footprint_widestrings(spec)
             footprint.raw_data = footprint._data_stream_for_save()

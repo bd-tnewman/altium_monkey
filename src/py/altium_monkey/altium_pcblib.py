@@ -464,6 +464,10 @@ class AltiumPcbFootprint:
         ) = None
         self._via_structure_parse_failed: bool = False
         self._authoring_builder: Any | None = None
+        # Set by AltiumPcbLib.edit_footprint for in-place edits of a parsed footprint:
+        # the builder spec plus the side streams generated before any edit.
+        self._edit_spec: Any | None = None
+        self._edit_baseline: dict[str, bytes | None] | None = None
         self._pcblib_svg_layer_names_by_v7_id: dict[int, str] = {}
         self._pcblib_svg_enabled_mechanical_v7_ids: tuple[int, ...] = ()
 
@@ -482,6 +486,8 @@ class AltiumPcbFootprint:
     def __getstate__(self) -> dict[str, object]:
         state = dict(self.__dict__)
         state["_authoring_builder"] = None
+        state["_edit_spec"] = None
+        state["_edit_baseline"] = None
         return state
 
     def set_footprint_primitive_parameter(self, name: str, value: str) -> None:
@@ -547,9 +553,61 @@ class AltiumPcbFootprint:
             raise RuntimeError(
                 "Footprint is not attached to an authoring PcbLib. "
                 "Create or attach it with AltiumPcbLib.add_footprint(...) or "
-                "AltiumPcbLib.add_existing_footprint(...) before adding primitives."
+                "AltiumPcbLib.add_existing_footprint(...), or open a parsed "
+                "footprint with AltiumPcbLib.edit_footprint(...), before "
+                "adding or removing primitives."
             )
         return self._authoring_builder
+
+    def remove_primitive(self, primitive: object) -> None:
+        """
+        Remove one primitive from this footprint.
+
+        Side records that address primitives by index (GUIDs, unique ids,
+        extended primitive information, corner radius records) follow the
+        remaining primitives on save; records of the removed primitive are
+        dropped.
+        """
+        builder = self._require_authoring_builder()
+        position = next(
+            (i for i, p in enumerate(self._record_order) if p is primitive), None
+        )
+        if position is None:
+            raise ValueError("primitive is not part of this footprint")
+        del self._record_order[position]
+        for collection in (
+            self.pads,
+            self.vias,
+            self.tracks,
+            self.arcs,
+            self.fills,
+            self.texts,
+            self.regions,
+            self.component_bodies,
+        ):
+            index = next(
+                (i for i, p in enumerate(collection) if p is primitive), None
+            )
+            if index is not None:
+                del collection[index]
+                break
+        builder._forget_primitive(self, primitive)
+
+    def _reindex_extended_primitive_information(self) -> None:
+        index_by_id = {id(p): i for i, p in enumerate(self._record_order)}
+        kept = []
+        for item in self.extended_primitive_information:
+            target = getattr(item, "_target_primitive", None)
+            if target is None:
+                kept.append(item)
+                continue
+            new_index = index_by_id.get(id(target))
+            if new_index is None:
+                continue
+            if item.primitive_index != new_index:
+                item.primitive_index = new_index
+            kept.append(item)
+        self.extended_primitive_information = kept
 
     def add_pad(
         self,
@@ -2450,6 +2508,9 @@ class AltiumPcbLib:
         self.raw_section_keys: bytes | None = None
         self.combine_provenance: dict[str, object] | None = None
         self._authoring_builder: Any | None = None
+        # Primitive factory for in-place edits of parsed footprints (edit_footprint);
+        # never used to rebuild the library.
+        self._parsed_editor: Any | None = None
         self._source_streams: dict[str, bytes] = {}
         self._source_storages: tuple[str, ...] = ()
         self._source_footprint_keys: tuple[str, ...] = ()
@@ -2490,6 +2551,11 @@ class AltiumPcbLib:
     def _ensure_authoring_builder(self) -> Any:
         if self._authoring_builder is not None:
             return self._authoring_builder
+        if any(fp._edit_spec is not None for fp in self.footprints):
+            raise RuntimeError(
+                "Footprints opened with edit_footprint(...) cannot be mixed with "
+                "library authoring; save first"
+            )
 
         from .altium_pcblib_builder import PcbLibBuilder
 
@@ -3543,6 +3609,10 @@ class AltiumPcbLib:
             footprint.extended_primitive_information = (
                 parse_extended_primitive_information_stream(raw_extended)
             )
+            for item in footprint.extended_primitive_information:
+                index = item.primitive_index
+                if index is not None and 0 <= index < len(footprint._record_order):
+                    item._target_primitive = footprint._record_order[index]
 
         raw_corner_radius = cls._load_optional_stream(
             ole,
@@ -4215,6 +4285,7 @@ class AltiumPcbLib:
         _sync_footprint_parameter_stream(footprint)
         _sync_footprint_primitive_parameter_stream(footprint)
         _sync_footprint_via_structure_streams(footprint)
+        self._apply_parsed_footprint_edits(footprint)
 
         if footprint._record_order:
             writer.add_stream(f"{storage_name}/Data", footprint._data_stream_for_save())
@@ -4331,6 +4402,50 @@ class AltiumPcbLib:
     ) -> None:
         if data is not None:
             writer.add_stream(path, data)
+
+    def edit_footprint(
+        self, footprint_or_name: AltiumPcbFootprint | str
+    ) -> AltiumPcbFootprint:
+        """
+        Open one parsed footprint for primitive edits (`add_*`, `remove_primitive`).
+
+        Unlike library authoring, nothing else is rebuilt: on save only this
+        footprint's index-dependent side streams (primitive count, GUIDs,
+        unique ids, extended primitive information, wide strings) are
+        regenerated, and only those that its edits actually changed. Every other
+        stream keeps its source bytes.
+        """
+        if self._authoring_builder is not None:
+            return self._resolve_owned_footprint(footprint_or_name)
+        footprint = self._resolve_owned_footprint(footprint_or_name)
+        if footprint._edit_spec is not None:
+            return footprint
+        if footprint._unparsed_bytes:
+            raise ValueError(
+                f"Footprint {footprint.name!r} has {footprint._unparsed_bytes} "
+                "unparsed Data byte(s) and cannot be edited safely"
+            )
+        if self._parsed_editor is None:
+            from .altium_pcblib_builder import PcbLibBuilder
+
+            self._parsed_editor = PcbLibBuilder()
+        spec = self._parsed_editor._attach_parsed_footprint(footprint)
+        footprint._edit_spec = spec
+        footprint._edit_baseline = self._parsed_editor._parsed_footprint_side_streams(
+            spec
+        )
+        return footprint
+
+    def _apply_parsed_footprint_edits(self, footprint: AltiumPcbFootprint) -> None:
+        if footprint._edit_spec is None or self._parsed_editor is None:
+            return
+        current = self._parsed_editor._parsed_footprint_side_streams(
+            footprint._edit_spec
+        )
+        baseline = footprint._edit_baseline or {}
+        for attr, value in current.items():
+            if value != baseline.get(attr):
+                setattr(footprint, attr, value)
 
     def save(self, filepath: Path | str, debug: bool = False) -> None:
         """
