@@ -18,6 +18,7 @@ SubRecord 6 lane; this stream carries the exact value.
 
 from __future__ import annotations
 
+import re
 import struct
 
 from typing import Sequence
@@ -45,6 +46,9 @@ class AltiumPcbCornerRadiusChamfer(PcbLengthPrefixedPropertyRecordMixin):
         self.raw_record_payload: bytes | None = None
         self._typed_signature_at_parse: tuple | None = None
         self._properties_raw_signature: tuple | None = None
+        # Pad this record was attached to at parse time; followed by identity so
+        # PRIMITIVEINDEX can be re-pointed when primitives are added or removed.
+        self._target_pad: AltiumPcbPad | None = None
 
     @classmethod
     def from_payload(cls, payload: bytes) -> "AltiumPcbCornerRadiusChamfer":
@@ -90,17 +94,23 @@ class AltiumPcbCornerRadiusChamfer(PcbLengthPrefixedPropertyRecordMixin):
         self.stack_entries = entries
 
     def _sync_typed_fields_to_properties(self) -> None:
-        props: dict[str, str] = {}
+        # Update in place so key order and lanes this model does not interpret
+        # (for example SCRn.CRSIZE absolute corner sizes) survive a rewrite.
+        props: dict[str, str] = dict(self.properties or {})
+        count = len(self.stack_entries)
+        for key in list(props):
+            match = re.match(r"SCR(\d+)\.", key)
+            if match is not None and int(match.group(1)) >= count:
+                del props[key]
         for index, (layer_token, percent_token) in enumerate(self.stack_entries):
             props[f"SCR{index}.LAYER"] = str(layer_token)
-            props[f"SCR{index}.CRPCTEX"] = str(percent_token)
+            percent_key = f"SCR{index}.CRPCTEX"
+            if str(percent_token) != "" or percent_key in props:
+                props[percent_key] = str(percent_token)
         if self.primitive_index is not None:
             props["PRIMITIVEINDEX"] = str(int(self.primitive_index))
-        # Carry through any unrecognized keys from the parsed payload so
-        # future AD additions (for example chamfer state) are not dropped.
-        for key, value in (self.properties or {}).items():
-            if key not in props and not key.startswith("SCR"):
-                props[key] = value
+        else:
+            props.pop("PRIMITIVEINDEX", None)
         self.properties = props
 
     def _typed_signature(self) -> tuple:
@@ -181,6 +191,7 @@ def attach_corner_radius_chamfer_to_pads(
         primitive = primitives[index]
         if not isinstance(primitive, AltiumPcbPad):
             continue
+        record._target_pad = primitive
         for layer_token, percent_token in record.stack_entries:
             try:
                 value = float(percent_token)
@@ -228,36 +239,63 @@ def corner_radius_chamfer_records_for_pads(
     """
     Return save-ready records for the pads in ``primitives``.
 
-    When the pads' exact values still match the parsed records, the existing
-    records are returned so unmodified files round-trip byte-faithfully.
-    Otherwise the records are rebuilt from the pads (authored or edited
-    documents).
+    Unmodified records are returned unchanged so files round-trip
+    byte-faithfully. Records follow their pad by identity: they are re-pointed
+    when primitives move, dropped only when their pad is removed, and rebuilt
+    only when the pad's exact percent values were edited. Records whose lanes
+    this model does not interpret (for example ``SCRn.CRSIZE``) and records that
+    cannot be attributed to a pad are preserved verbatim.
     """
-    expected = _expected_corner_entries(primitives)
-    matched: list[AltiumPcbCornerRadiusChamfer] = []
-    unmatched: list[AltiumPcbCornerRadiusChamfer] = []
+    index_by_id = {id(primitive): i for i, primitive in enumerate(primitives)}
+    out: list[AltiumPcbCornerRadiusChamfer] = []
+    covered: set[int] = set()
+    changed = False
     for record in existing:
-        index = record.primitive_index
-        if (
-            index is not None
-            and 0 <= index < len(primitives)
-            and isinstance(primitives[index], AltiumPcbPad)
-        ):
-            matched.append(record)
-        else:
-            # Unattributable records (unknown index space or non-pad target)
-            # are preserved verbatim rather than dropped.
-            unmatched.append(record)
-    matched_semantic = [
-        (record.primitive_index, _record_semantic_entries(record)) for record in matched
-    ]
-    if matched_semantic == [(index, entries) for index, entries in expected]:
-        return existing
-    rebuilt = [
-        build_corner_radius_chamfer_record(primitive_index=index, entries=list(entries))
-        for index, entries in expected
-    ]
-    return rebuilt + unmatched
+        target = record._target_pad
+        if target is None:
+            index = record.primitive_index
+            if (
+                index is not None
+                and 0 <= index < len(primitives)
+                and isinstance(primitives[index], AltiumPcbPad)
+            ):
+                target = primitives[index]
+        if target is None:
+            out.append(record)
+            continue
+        new_index = index_by_id.get(id(target))
+        if new_index is None:
+            changed = True
+            continue
+        covered.add(id(target))
+        semantic = _record_semantic_entries(record)
+        if semantic:
+            exact = tuple(
+                (str(token), float(value))
+                for token, value in target.exact_corner_radius_percent_by_layer.items()
+            )
+            if semantic != exact:
+                changed = True
+                if exact:
+                    out.append(
+                        build_corner_radius_chamfer_record(
+                            primitive_index=new_index, entries=list(exact)
+                        )
+                    )
+                continue
+        if new_index != record.primitive_index:
+            record.primitive_index = new_index
+            changed = True
+        out.append(record)
+    for index, entries in _expected_corner_entries(primitives):
+        if id(primitives[index]) not in covered:
+            out.append(
+                build_corner_radius_chamfer_record(
+                    primitive_index=index, entries=list(entries)
+                )
+            )
+            changed = True
+    return out if changed else existing
 
 
 def build_corner_radius_chamfer_record(

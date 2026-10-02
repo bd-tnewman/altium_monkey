@@ -4204,7 +4204,7 @@ class PcbLibBuilder:
             footprint = spec.footprint
             primitive_count = len(footprint._record_order)
             self._sync_footprint_widestrings(spec)
-            footprint.raw_data = footprint.serialize_data_stream()
+            footprint.raw_data = footprint._data_stream_for_save()
             footprint.raw_header = struct.pack("<I", primitive_count)
             footprint.raw_parameters = _build_footprint_parameters(spec)
             footprint.raw_widestrings = _build_footprint_widestrings(spec.widestrings)

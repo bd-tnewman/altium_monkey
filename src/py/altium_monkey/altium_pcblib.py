@@ -430,6 +430,15 @@ class AltiumPcbFootprint:
         # Raw binary data for round-trip
         self.raw_header: bytes | None = None
         self.raw_data: bytes | None = None
+        # Data-stream name header as read, and the footprint name it was read under.
+        # Altium can store a header name that differs from the catalog name
+        # (e.g. the PATTERN), so it is reused verbatim until the footprint is renamed.
+        self._raw_name_header: bytes | None = None
+        self._raw_name_header_owner: str | None = None
+        # Bytes the parser skipped. Such a footprint is written back verbatim when
+        # unedited; edits are refused because re-serializing would drop the bytes.
+        self._unparsed_bytes: int = 0
+        self._parsed_data_stream: bytes | None = None
         self.raw_parameters: bytes | None = None
         self.raw_primitive_parameters: bytes | None = None
         self.raw_widestrings: bytes | None = None
@@ -1660,6 +1669,8 @@ class AltiumPcbFootprint:
             header_len = struct.unpack("<I", data[0:4])[0]
             if header_len > 0 and 4 + header_len <= len(data):
                 offset = 4 + header_len
+                self._raw_name_header = data[:offset]
+                self._raw_name_header_owner = self.name
                 if debug:
                     log.debug(f"Skipped {offset}-byte footprint name header")
 
@@ -1735,6 +1746,7 @@ class AltiumPcbFootprint:
                         log.warning(
                             f"Unknown record type at offset {offset}: 0x{type_byte:02X}"
                         )
+                    self._unparsed_bytes += 1
                     offset += 1
 
             except Exception as e:
@@ -1742,7 +1754,32 @@ class AltiumPcbFootprint:
                     f"Error parsing footprint {self.name} at offset {offset}: {e}"
                 )
                 # Try to continue
+                self._unparsed_bytes += 1
                 offset += 1
+
+        if self._unparsed_bytes:
+            log.warning(
+                f"Footprint {self.name}: {self._unparsed_bytes} byte(s) of the Data "
+                "stream could not be parsed; it will be saved unchanged and edits "
+                "to it will be refused"
+            )
+            self._parsed_data_stream = self.serialize_data_stream()
+
+    def _data_stream_for_save(self) -> bytes:
+        """
+        Return the Data stream to write, guarding footprints the parser could
+        not fully read.
+        """
+        data = self.serialize_data_stream()
+        if not self._unparsed_bytes or self.raw_data is None:
+            return data
+        if data != self._parsed_data_stream:
+            raise ValueError(
+                f"Footprint {self.name!r} was edited but {self._unparsed_bytes} "
+                "byte(s) of its Data stream could not be parsed; saving would "
+                "lose them"
+            )
+        return self.raw_data
 
     def serialize_data_stream(self) -> bytes:
         """
@@ -1756,9 +1793,15 @@ class AltiumPcbFootprint:
             Native binary bytes for the footprint `Data` stream.
         """
         # Build footprint name header: [uint32 pascal_len] [byte name_len] [name_bytes]
-        name_bytes = self.name.encode("ascii")
-        pascal_str = bytes([len(name_bytes)]) + name_bytes
-        header = struct.pack("<I", len(pascal_str)) + pascal_str
+        if (
+            self._raw_name_header is not None
+            and self._raw_name_header_owner == self.name
+        ):
+            header = self._raw_name_header
+        else:
+            name_bytes = self.name.encode("ascii")
+            pascal_str = bytes([len(name_bytes)]) + name_bytes
+            header = struct.pack("<I", len(pascal_str)) + pascal_str
 
         result = bytearray(header)
         for prim in self._record_order:
@@ -1784,6 +1827,8 @@ class AltiumPcbFootprint:
         footprint = cls(name)
         footprint.parse_binary_data(data, debug)
         resolve_pcblib_custom_pad_shapes(footprint)
+        if footprint._unparsed_bytes:
+            footprint._parsed_data_stream = footprint.serialize_data_stream()
         return footprint
 
     def get_summary(self) -> str:
@@ -4172,7 +4217,7 @@ class AltiumPcbLib:
         _sync_footprint_via_structure_streams(footprint)
 
         if footprint._record_order:
-            writer.add_stream(f"{storage_name}/Data", footprint.serialize_data_stream())
+            writer.add_stream(f"{storage_name}/Data", footprint._data_stream_for_save())
         elif footprint.raw_data is not None:
             writer.add_stream(f"{storage_name}/Data", footprint.raw_data)
 
