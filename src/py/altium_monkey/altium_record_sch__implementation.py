@@ -487,6 +487,61 @@ class AltiumSchImplementation(SchPrimitive):
         self._write_datafile_values(serializer, record, raw, links)
         if links_changed or location_changed:
             self._remove_stale_datafiles(record, len(links))
+            if raw is not None:
+                self._group_datafile_fields(record, raw)
+
+    @staticmethod
+    def _group_datafile_fields(
+        record: dict[str, object], raw: dict[str, object]
+    ) -> None:
+        """Place DatafileCount and the link fields as Altium writes them.
+
+        Order: ...ModelType|DatafileCount|ModelDatafile0|ModelDatafileEntity0|ModelDatafileKind0|...
+        """
+
+        def rank(key: str) -> tuple[int, int, bool]:
+            plain = _plain_dynamic_field(key)
+            part = (
+                1
+                if plain.startswith("modeldatafileentity")
+                else 2
+                if plain.startswith("modeldatafilekind")
+                else 0
+            )
+            return (_model_datafile_index(key) or 0, part, key.lower().startswith("%utf8%"))
+
+        link_keys = sorted(
+            (key for key in record if _model_datafile_index(key) is not None), key=rank
+        )
+        block = {key: record.pop(key) for key in link_keys}
+        count_key = next(
+            (key for key in record if _plain_dynamic_field(key) == "datafilecount"), None
+        )
+        if count_key is not None:
+            block = {count_key: record.pop(count_key), **block}
+        if not block:
+            return
+        items = list(record.items())
+        names = [_plain_dynamic_field(key) for key, _ in items]
+        raw_names = [_plain_dynamic_field(key) for key in raw]
+        if "datafilecount" in raw_names:
+            # Keep the stored position: after the field that preceded it.
+            stored = raw_names.index("datafilecount")
+            before = [name for name in raw_names[:stored] if name in names]
+            anchor = names.index(before[-1]) + 1 if before else 0
+        else:
+            anchor = next(
+                (
+                    names.index(name) + 1
+                    for name in ("modeltype", "modelname")
+                    if name in names
+                ),
+                len(items),
+            )
+        record.clear()
+        record.update(items[:anchor])
+        record.update(block)
+        record.update(items[anchor:])
 
     def _write_datafile_count(
         self,

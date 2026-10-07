@@ -42,3 +42,22 @@ def test_untouched_save_is_byte_identical(tmp_path: Path) -> None:
     out = tmp_path / "copy.SchDoc"
     AltiumSchDoc(FIXTURE).save(out)
     assert _fileheader_frames(out) == _fileheader_frames(FIXTURE)
+
+
+def test_new_footprint_link_uses_altium_field_order(tmp_path: Path) -> None:
+    doc = AltiumSchDoc(FIXTURE)
+    impl = next(
+        o for o in doc.all_objects if type(o).__name__ == "AltiumSchImplementation"
+    )
+    impl.model_name = "FP_NEW"
+    impl.model_datafiles = [("Lib.PcbLib", "FP_NEW", "PCBLib")]
+    impl._sync_legacy_datafile_view()
+    out = tmp_path / "relinked.SchDoc"
+    doc.save(out)
+
+    frame = next(f for f in _fileheader_frames(out) if b"ModelName=FP_NEW" in f)
+    # Same order Altium Designer writes when the link is edited natively.
+    assert (
+        b"|ModelName=FP_NEW|ModelType=PCBLIB|DatafileCount=1|ModelDatafile0=Lib.PcbLib"
+        b"|ModelDatafileEntity0=FP_NEW|ModelDatafileKind0=PCBLib|IsCurrent=T|"
+    ) in frame
