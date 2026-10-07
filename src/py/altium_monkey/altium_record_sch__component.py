@@ -32,6 +32,7 @@ from .altium_serializer import (
     CaseMode,
     FieldDef,
     Fields,
+    place_new_fields,
     read_dynamic_string_field,
     write_dynamic_string_field,
 )
@@ -327,8 +328,8 @@ class AltiumSchComponent(SchGraphicalObject):
         self.source_library_name, self._has_source_library_name = (
             self._read_dynamic_field(s, record, Fields.SOURCE_LIBRARY_NAME, "")
         )
-        self.component_description, self._has_component_description = s.read_str(
-            r, Fields.COMPONENT_DESCRIPTION, default=""
+        self.component_description, self._has_component_description = (
+            self._read_dynamic_field(s, record, Fields.COMPONENT_DESCRIPTION, "")
         )
         self._library_path_at_parse = self.library_path
         self.utf8_component_description = ""
@@ -661,15 +662,14 @@ class AltiumSchComponent(SchGraphicalObject):
             or self.component_description
             or self._component_changed("component_description")
         ):
-            serializer.write_str(
+            self._write_dynamic_field(
+                serializer,
                 record,
                 Fields.COMPONENT_DESCRIPTION,
                 self.component_description,
-                raw,
+                was_present=self._has_component_description,
                 force=self._component_changed("component_description"),
             )
-        record.pop("%UTF8%ComponentDescription", None)
-        record.pop("%UTF8%COMPONENTDESCRIPTION", None)
 
     def _serialize_multipart_fields(
         self,
@@ -1251,7 +1251,10 @@ class AltiumSchComponent(SchGraphicalObject):
                 record, self._authored_component_order()
             )
         self._canonicalize_component_default_mutations(record, s)
-        return record
+        canonical = self._order_fields_case_insensitively(
+            dict(record), self._authored_component_order()
+        )
+        return place_new_fields(record, self._raw_record, list(canonical))
 
     def _canonicalize_component_default_mutations(
         self,

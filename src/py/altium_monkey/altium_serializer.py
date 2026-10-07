@@ -1789,6 +1789,37 @@ def get_serializer(mode: CaseMode = CaseMode.PASCALCASE) -> AltiumSerializer:
     return AltiumSerializer(mode)
 
 
+def place_new_fields(
+    record: dict[str, object],
+    raw_record: Mapping[str, object],
+    canonical_keys: list[str],
+) -> dict[str, object]:
+    """Move fields that the loaded record lacked to where Altium writes them.
+
+    Stored fields keep their order; each new field goes before the first field that
+    follows it in `canonical_keys` (the order used for freshly authored records).
+    """
+    stored = {key.casefold() for key in raw_record}
+    new_keys = [key for key in record if key.casefold() not in stored]
+    if not new_keys:
+        return record
+    rank = {key.casefold(): index for index, key in enumerate(canonical_keys)}
+    result = [(key, value) for key, value in record.items() if key.casefold() in stored]
+    for key in new_keys:
+        position = rank.get(key.casefold())
+        index = next(
+            (
+                i
+                for i, (existing, _) in enumerate(result)
+                if position is not None
+                and rank.get(existing.casefold(), -1) > position
+            ),
+            len(result),
+        )
+        result.insert(index, (key, record[key]))
+    return dict(result)
+
+
 # Default serializers for common use cases
 SCHLIB_SERIALIZER = AltiumSerializer(CaseMode.UPPERCASE)
 SCHDOC_SERIALIZER = AltiumSerializer(CaseMode.PASCALCASE)

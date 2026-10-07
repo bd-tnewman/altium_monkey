@@ -61,3 +61,30 @@ def test_new_footprint_link_uses_altium_field_order(tmp_path: Path) -> None:
         b"|ModelName=FP_NEW|ModelType=PCBLIB|DatafileCount=1|ModelDatafile0=Lib.PcbLib"
         b"|ModelDatafileEntity0=FP_NEW|ModelDatafileKind0=PCBLib|IsCurrent=T|"
     ) in frame
+
+
+UTF8_DESCRIPTION_FIXTURE = (
+    Path(__file__).resolve().parents[1] / "examples/assets/projects/loz-old-man/POWER.SchDoc"
+)
+
+
+def test_component_description_keeps_utf8_sidecar(tmp_path: Path) -> None:
+    doc = AltiumSchDoc(UTF8_DESCRIPTION_FIXTURE)
+    component = next(
+        c for c in doc.components if "%UTF8%ComponentDescription" in c._source_record[0]
+    )
+    expected = component._source_record[0]["%UTF8%ComponentDescription"]
+    assert component.component_description == expected
+
+    # Edit a different component so the document is re-serialized.
+    other = next(c for c in doc.components if c is not component)
+    other.design_item_id = "EDITED-ITEM"
+    out = tmp_path / "edited.SchDoc"
+    doc.save(out)
+
+    reloaded = AltiumSchDoc(out)
+    match = next(
+        c for c in reloaded.components if c.unique_id == component.unique_id
+    )
+    assert match.component_description == expected
+    assert "%UTF8%ComponentDescription" in match._source_record[0]
