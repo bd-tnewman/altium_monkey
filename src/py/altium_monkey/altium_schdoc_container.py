@@ -48,6 +48,8 @@ class _SchDocWarehouse:
     header: dict[str, object]
     records: tuple[dict[str, object], ...]
     stored_weight: int | None
+    # Original length-prefixed bytes of each record, aligned with ``records``.
+    record_frames: tuple[bytes, ...] = ()
 
     @property
     def weight_is_stale(self) -> bool:
@@ -96,7 +98,36 @@ def _parse_warehouse(
         raise SchDocContainerError(
             "malformed", f"{stream} is missing Weight", stream=stream
         )
-    return _SchDocWarehouse(header, records, weight)
+    frames = _record_frames(data)
+    if len(frames) != len(framed):
+        frames = ()
+    return _SchDocWarehouse(header, records, weight, frames[1:])
+
+
+def _frames_by_record(warehouse: _SchDocWarehouse) -> dict[int, bytes]:
+    """Map ``id(record)`` to its original frame bytes."""
+    if len(warehouse.record_frames) != len(warehouse.records):
+        return {}
+    return {
+        id(record): frame
+        for record, frame in zip(
+            warehouse.records, warehouse.record_frames, strict=True
+        )
+    }
+
+
+def _record_frames(data: bytes) -> tuple[bytes, ...]:
+    """Slice an already validated stream into its length-prefixed frames."""
+    frames: list[bytes] = []
+    offset = 0
+    while offset + 4 <= len(data):
+        length = int.from_bytes(data[offset : offset + 4], "little") & 0x00FF_FFFF
+        end = offset + 4 + length
+        if length == 0 or end > len(data):
+            break
+        frames.append(data[offset:end])
+        offset = end
+    return tuple(frames)
 
 
 def _parse_header_weight(header: dict[str, object], stream: str) -> int | None:

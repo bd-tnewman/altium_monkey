@@ -173,6 +173,7 @@ from .altium_schdoc_container import (
     SchDocContainerError,
     _SchDocBudget,
     _SchDocReadLimits,
+    _frames_by_record,
     _header_value,
     _parse_storage,
     _parse_warehouse,
@@ -217,6 +218,25 @@ def _shorten_managed_title_block_path(file_path: str) -> str:
 
 
 _MANAGED_SCHDOC_IGNORED_RECORD_IDS = frozenset({220, 221, 222, 223, 240, 241})
+
+
+def _same_record_content(source: dict[str, object], record: dict[str, object]) -> bool:
+    """Compare a loaded record with its re-serialized form.
+
+    ``%UTF8%`` fields keep Altium's broken-bar separator in the loaded dict,
+    while the object model reads it as ``|`` (as it does for ANSI fields).
+    """
+    if source.keys() != record.keys():
+        return False
+    for key, value in source.items():
+        other = record[key]
+        if value == other:
+            continue
+        if not (isinstance(value, str) and isinstance(other, str)):
+            return False
+        if value.replace("\xa6", "|") != other.replace("\xa6", "|"):
+            return False
+    return True
 
 if TYPE_CHECKING:
     from ._altium_sch_component_project_state import _ComponentProjectRenderState
@@ -1361,14 +1381,24 @@ class AltiumSchDoc(JsonApplyMixin):
         self._file_weight = fileheader.stored_weight
         unique_id = _header_value(fileheader.header, "UniqueID")
         self._file_unique_id = str(unique_id) if unique_id else None
-        self._parse_records(fileheader_records, debug, source_stream="FileHeader")
+        self._parse_records(
+            fileheader_records,
+            debug,
+            source_stream="FileHeader",
+            frames=_frames_by_record(fileheader),
+        )
         self._fileheader_raw_records = [dict(record) for record in fileheader_records]
         self._fileheader_objects = list(self.all_objects)
 
         if additional is not None:
             self._additional_header = additional.header
             start = len(self.all_objects)
-            self._parse_records(additional_records, debug, source_stream="Additional")
+            self._parse_records(
+                additional_records,
+                debug,
+                source_stream="Additional",
+                frames=_frames_by_record(additional),
+            )
             self._additional_raw_records = [
                 dict(record) for record in additional_records
             ]
@@ -1836,6 +1866,7 @@ class AltiumSchDoc(JsonApplyMixin):
         records: list[dict[str, Any]],
         debug: bool = False,
         source_stream: str = "FileHeader",
+        frames: dict[int, bytes] | None = None,
     ) -> None:
         """
         Parse records and categorize by type.
@@ -1847,8 +1878,12 @@ class AltiumSchDoc(JsonApplyMixin):
             records: List of record dictionaries
             debug: Enable debug output
             source_stream: Which stream these records came from ('FileHeader' or 'Additional')
+            frames: Original record bytes keyed by ``id(record)``; unchanged
+                records are written back with these bytes on save.
         """
         for _idx, record in enumerate(records):
+            object_count = len(self._objects)
+            source_record = dict(record)
             try:
                 record_type_id = _record_id(record, source_stream, _idx)
                 try:
@@ -1955,6 +1990,9 @@ class AltiumSchDoc(JsonApplyMixin):
                     stream=source_stream,
                     record_index=_idx,
                 ) from e
+            frame = frames.get(id(record)) if frames else None
+            if frame is not None and len(self._objects) == object_count + 1:
+                _as_dynamic(self._objects[-1])._source_record = (source_record, frame)
 
     def _build_component_hierarchy(self, debug: bool = False) -> None:
         """
@@ -10643,6 +10681,12 @@ class AltiumSchDoc(JsonApplyMixin):
                 record[name_key] = "LengthParameter"
             if not isinstance(obj, dict):
                 _as_dynamic(obj)._raw_record = dict(record)
+            # Unchanged records keep their original bytes so that encoding
+            # choices made by Altium (e.g. the 0x8E list separator) survive.
+            source = getattr(obj, "_source_record", None)
+            if source is not None and _same_record_content(source[0], record):
+                staged.append(source[1])
+                continue
             staged.append(encode_altium_record(record))
         return tuple(staged)
 
