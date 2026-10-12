@@ -53,7 +53,7 @@ from .altium_pcb_embedded_board import (
     EmbeddedBoardStreamError,
     parse_embedded_boards6_stream,
 )
-from .altium_pcbdoc_builder_components import build_component_stream
+from .altium_pcbdoc_builder_components import build_component_stream  # noqa: F401  (re-exported)
 from .altium_pcb_dimension import AltiumPcbDimension, parse_dimensions6_stream
 from .altium_pcb_corner_radius_chamfer import (
     AltiumPcbCornerRadiusChamfer,
@@ -184,6 +184,19 @@ from .altium_utilities import (
 from .altium_ole import AltiumOleFile, AltiumOleWriter
 
 log = logging.getLogger(__name__)
+
+
+def _component_frames(data: bytes, count: int) -> list[bytes]:
+    """Original length-prefixed record frames of Components6/Data ([] if they don't line up)."""
+    frames, offset = [], 0
+    while offset + 4 <= len(data):
+        length = int.from_bytes(data[offset:offset + 4], "little") & 0x00FF_FFFF
+        end = offset + 4 + length
+        if length == 0 or end > len(data):
+            break
+        frames.append(data[offset:end])
+        offset = end
+    return frames if len(frames) == count else []
 
 if TYPE_CHECKING:
     from .altium_board import BoardOutlineVertex
@@ -2978,6 +2991,7 @@ class AltiumPcbDoc:
         if verbose:
             log.info("  Parsing Components6/Data...")
         component_records = get_records_in_section(ole, "Components6/Data")
+        frames = _component_frames(ole.openstream(["Components6", "Data"]), len(component_records))
         for index, record in enumerate(component_records):
             unique_id = str(record.get("UNIQUEID") or "")
             component_parameters: dict[str, object] = {
@@ -3006,6 +3020,8 @@ class AltiumPcbDoc:
                     component_kind=parse_component_kind(record),
                 )
             )
+            if frames:
+                self.components[-1]._source_frame = frames[index]
         if verbose:
             log.info(f"    Found {len(self.components)} components")
 
@@ -4349,7 +4365,8 @@ class AltiumPcbDoc:
         """
         Write component placement records after semantic component mutation.
         """
-        if not self._union_authoring_dirty:
+        edited = any(component._edited_fields for component in self.components)
+        if not self._union_authoring_dirty and not edited:
             return
         if verbose:
             log.info(
@@ -4359,7 +4376,7 @@ class AltiumPcbDoc:
             writer,
             "Components6",
             record_count=len(self.components),
-            data=build_component_stream(self.components),
+            data=b"".join(component.to_frame() for component in self.components),
             force=True,
         )
 
@@ -4484,11 +4501,17 @@ class AltiumPcbDoc:
             or len(embedded_models) != len(self.models)
         )
         if write_models_no_embed:
+            # Altium leaves ModelsNoEmbed empty when every model is embedded; keep it that way.
+            keep_empty = (
+                self._models_stream_source != "ModelsNoEmbed/Data"
+                and not self._raw_streams.get("ModelsNoEmbed/Data")
+                and len(embedded_models) == len(self.models)
+            )
             self._write_counted_section(
                 writer,
                 "ModelsNoEmbed",
-                record_count=len(self.models),
-                data=models_data_all,
+                record_count=0 if keep_empty else len(self.models),
+                data=b"" if keep_empty else models_data_all,
                 force=True,
             )
             self._write_counted_section(

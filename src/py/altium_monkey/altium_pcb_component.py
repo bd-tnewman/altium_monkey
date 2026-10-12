@@ -67,6 +67,56 @@ class AltiumPcbComponent:
             self.parameters = {}
         if self.raw_record is None:
             self.raw_record = {}
+        self._source_frame: bytes | None = None   # original Components6 record bytes, when parsed
+        self._edited_fields: set[str] = set()
+
+    def set_source_library(
+        self,
+        *,
+        component_library: str | None = None,
+        library_identifier: str | None = None,
+        lib_reference: str | None = None,
+        footprint_library: str | None = None,
+    ) -> list[str]:
+        """Update the component's source library links; returns the record fields that changed."""
+        changed = []
+        for key, value in (
+            ("SOURCECOMPONENTLIBRARY", component_library),
+            ("SOURCECOMPLIBRARYIDENTIFIER", library_identifier),
+            ("SOURCELIBREFERENCE", lib_reference),
+            ("SOURCEFOOTPRINTLIBRARY", footprint_library),
+        ):
+            if value is None or self._raw_text(key) == value:
+                continue
+            self._raw_record_map()[key] = value
+            self._edited_fields.add(key)
+            changed.append(key)
+        return changed
+
+    def to_frame(self) -> bytes:
+        """Length-prefixed Components6 record: the original bytes, with only edited fields rewritten."""
+        from .altium_utilities import encode_altium_record
+
+        if self._source_frame is None:
+            return encode_altium_record(dict(self.raw_record or {}), utf8_sidecars=False)
+        if not self._edited_fields:
+            return self._source_frame
+        values = {key: str(self._raw_text(key)) for key in self._edited_fields}
+        if any(not v.isascii() or "|" in v for v in values.values()):
+            return encode_altium_record(dict(self.raw_record or {}), utf8_sidecars=False)
+        header = int.from_bytes(self._source_frame[:4], "little")
+        payload = self._source_frame[4:]
+        body = payload.rstrip(b"\x00")
+        parts = body.split(b"|")
+        pending = dict(values)
+        for i, part in enumerate(parts):
+            key, sep, _ = part.partition(b"=")
+            name = key.decode("ascii", "replace").upper()
+            if sep and name in pending:
+                parts[i] = key + b"=" + pending.pop(name).encode("ascii")
+        parts += [f"{name}={value}".encode("ascii") for name, value in pending.items()]
+        new_payload = b"|".join(parts) + payload[len(body):]
+        return ((header & 0xFF00_0000) | len(new_payload)).to_bytes(4, "little") + new_payload
 
     def to_record(self) -> dict[str, object]:
         """
