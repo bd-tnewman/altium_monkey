@@ -426,7 +426,63 @@ def build_authored_text(
             text_record.textbox_rect_justification = 5
         text_record.is_bold = False
         text_record.is_italic = False
+        if inverted_rectangle_size_mils is None and frame_size_mils is None:
+            extents = stroke_text_extents(text_record)
+            if extents is not None:
+                min_x, min_y, max_x, max_y = extents
+                sw = text_record.stroke_width
+                box = (min_x - sw, min_y - sw, max_x + sw, max_y + sw)
+                text_record.textbox_rect_width = round(box[2] - box[0])
+                text_record.textbox_rect_height = round(box[3] - box[1])
+                if (
+                    text_justification is not None
+                    and int(text_justification) in _JUSTIFICATION_ANCHOR
+                    and not is_frame
+                    and not is_mirrored
+                    and float(rotation_degrees) % 360.0 == 0.0
+                ):
+                    # position_mils is the justification anchor, as in Altium's Properties panel.
+                    fx, fy = _JUSTIFICATION_ANCHOR[int(text_justification)]
+                    anchor_x, anchor_y = text_record.x, text_record.y
+                    text_record.x = round(anchor_x - box[0] - fx * (box[2] - box[0]))
+                    text_record.y = round(anchor_y - box[1] - fy * (box[3] - box[1]))
+                    text_record.snap_point_x = anchor_x
+                    text_record.snap_point_y = anchor_y
     return text_record
+
+
+# Where the anchor sits in the text box for each justification: (fraction of width, of height).
+_JUSTIFICATION_ANCHOR = {
+    1: (0.0, 1.0), 2: (0.0, 0.5), 3: (0.0, 0.0),
+    4: (0.5, 1.0), 5: (0.5, 0.5), 6: (0.5, 0.0),
+    7: (1.0, 1.0), 8: (1.0, 0.5), 9: (1.0, 0.0),
+}
+
+
+def stroke_text_extents(text_record: AltiumPcbText) -> tuple[float, float, float, float] | None:
+    """
+    Glyph centreline extents of unrotated stroke text, in internal units relative to its X/Y.
+
+    Altium stores the text box as these extents plus one stroke width on every side, and for
+    centre-justified text places X/Y so that the extents are centred on the anchor.
+    """
+    import copy
+
+    from .altium_text_to_polygon import render_pcb_text
+
+    probe = copy.copy(text_record)
+    probe.x = probe.y = 0
+    probe.rotation = 0.0
+    probe.is_mirrored = False
+    probe.is_frame = False
+    result = render_pcb_text(probe)
+    lines = getattr(result, "lines", None)
+    if not lines:
+        return None
+    per_mm = 10000.0 / 0.0254
+    xs = [v for line in lines for v in (line[0], line[2])]
+    ys = [v for line in lines for v in (line[1], line[3])]
+    return min(xs) * per_mm, min(ys) * per_mm, max(xs) * per_mm, max(ys) * per_mm
 
 
 def _resolve_barcode_widths_mils(

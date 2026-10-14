@@ -75,13 +75,17 @@ def test_edits_touch_only_the_edited_footprint(source: Path, tmp_path: Path) -> 
     assert sorted(t.text_content for t in reopened.texts) == [".Designator", "REF"]
 
     guids = _guids(after["FP_A/PrimitiveGuids/Data"])
-    assert (2, 0, pad_2_guid) in guids
+    # Altium's layout: the component GUID first, records grouped by type (arc 1, pad 2, track 4, text 5).
+    assert guids[0][0] == 0x55
+    assert [t for t, _, _ in guids[1:]] == [1, 2, 4, 4, 5, 5]
+    assert (2, 1, pad_2_guid) in guids
     assert len(guids) == len(reopened._record_order) + 1
     unique_id_2 = unique_ids.split(b"PRIMITIVEINDEX=1|PRIMITIVEOBJECTID=Pad|UNIQUEID=")[1][:8]
-    assert b"PRIMITIVEINDEX=0|PRIMITIVEOBJECTID=Pad|UNIQUEID=" + unique_id_2 in after[
+    assert b"PRIMITIVEINDEX=1|PRIMITIVEOBJECTID=Pad|UNIQUEID=" + unique_id_2 in after[
         "FP_A/UniqueIDPrimitiveInformation/Data"
     ]
     assert reopened.pads[0] is not pad_2
+    assert [t.widestring_index for t in reopened.texts] == [0, 1]
 
 
 def test_remove_primitive_requires_edit_mode(source: Path) -> None:
@@ -89,3 +93,29 @@ def test_remove_primitive_requires_edit_mode(source: Path) -> None:
     fp = library.find_footprint("FP_A")
     with pytest.raises(RuntimeError, match="edit_footprint"):
         fp.remove_primitive(fp.tracks[0])
+
+
+def test_new_primitives_follow_altium_conventions(source: Path, tmp_path: Path) -> None:
+    library = AltiumPcbLib(source)
+    fp = library.edit_footprint("FP_A")
+    fp.add_track((40, 30), (-40, 30), width_mils=4, layer="MECHANICAL1")
+    fp.add_arc(center_mils=(0, 0), radius_mils=8, start_angle_degrees=0,
+               end_angle_degrees=360, width_mils=4, layer="MECHANICAL1")
+    fp.add_text(text=".Designator", position_mils=(0, 0), height_mils=19.685,
+                stroke_width_mils=2.953, layer="MECHANICAL1", text_justification=5)
+    out = tmp_path / "conventions.PcbLib"
+    library.save(out)
+    reopened = AltiumPcbLib(out).find_footprint("FP_A")
+
+    track = reopened.tracks[-1]
+    assert (track.start_x, track.start_y) < (track.end_x, track.end_y)
+    assert track.polygon_index == 0xFFFF and reopened.arcs[-1].polygon_index == 0xFFFF
+
+    text = next(t for t in reopened.texts if t.text_content == ".Designator")
+    assert text.stroke_width == 29530
+    # Values from the same string placed natively in Altium (0.5 mm high, centred at the origin).
+    assert text.textbox_rect_width == pytest.approx(2026918, abs=20)
+    assert text.textbox_rect_height == pytest.approx(321437, abs=20)
+    assert (text.x, text.y) == (pytest.approx(-983931, abs=20), pytest.approx(-65595, abs=20))
+    assert (text.snap_point_x, text.snap_point_y) == (0, 0)
+    assert text.is_justification_valid and not text.is_designator

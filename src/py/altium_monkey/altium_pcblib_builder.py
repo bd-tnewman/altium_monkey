@@ -2991,6 +2991,14 @@ class PcbLibBuilder:
 
     def _sync_footprint_widestrings(self, spec: PcbLibFootprintSpec) -> None:
         synced_widestrings: dict[int, str] = {}
+        if spec.footprint._edit_spec is not None:
+            # Altium numbers the strings 0..n-1 in text record order.
+            texts = [p for p in spec.footprint._record_order if isinstance(p, AltiumPcbText)]
+            for wide_index, text_record in enumerate(texts):
+                text_record.widestring_index = wide_index
+                synced_widestrings[wide_index] = text_record.text_content or ""
+            spec.widestrings = synced_widestrings
+            return
         used_indices: set[int] = set()
         for text_record in spec.footprint.texts:
             wide_index = (
@@ -3042,15 +3050,15 @@ class PcbLibBuilder:
         if isinstance(primitive, AltiumPcbFill):
             return 0x06
         if isinstance(primitive, AltiumPcbRegion):
-            return 0x0B
+            return 0x59
         if isinstance(primitive, AltiumPcbShapeBasedRegion):
-            return 0x0B
+            return 0x59
         if isinstance(primitive, AltiumPcbComponentBody):
             return 0x5A
         raise TypeError(f"Unsupported primitive GUID type: {type(primitive).__name__}")
 
     def _build_footprint_primitive_guids(self, spec: PcbLibFootprintSpec) -> bytes:
-        records = bytearray()
+        records = bytearray(_build_primitive_guid_record(0x55, 0, spec.component_guid))
         for index, primitive in enumerate(spec.footprint._record_order):
             records.extend(
                 _build_primitive_guid_record(
@@ -3059,7 +3067,6 @@ class PcbLibBuilder:
                     self._ensure_primitive_guid(spec, primitive),
                 )
             )
-        records.extend(_build_primitive_guid_record(0x55, 0, spec.component_guid))
         return bytes(records)
 
     def _build_footprint_uniqueid_info(self, spec: PcbLibFootprintSpec) -> bytes | None:
@@ -3179,10 +3186,25 @@ class PcbLibBuilder:
             raise TypeError(
                 f"Unsupported footprint primitive type: {type(primitive).__name__}"
             )
-        footprint._record_order.append(primitive)
+        footprint._record_order.insert(
+            self._record_insert_position(footprint, primitive), primitive
+        )
         self._ensure_primitive_guid(spec, primitive)
         if isinstance(primitive, AltiumPcbPad):
             self._ensure_primitive_unique_id(spec, primitive)
+
+    def _record_insert_position(
+        self, footprint: AltiumPcbFootprint, primitive: object
+    ) -> int:
+        """After the last record of the same or an earlier type: Altium keeps records grouped by type."""
+        if footprint._edit_spec is None:
+            return len(footprint._record_order)
+        rank = self._primitive_guid_type_id(primitive)
+        position = 0
+        for index, existing in enumerate(footprint._record_order):
+            if self._primitive_guid_type_id(existing) <= rank:
+                position = index + 1
+        return position
 
     def add_embedded_model(
         self,
@@ -3641,10 +3663,15 @@ class PcbLibBuilder:
         track.start_y = self._mil_to_internal_units(start_y_mil)
         track.end_x = self._mil_to_internal_units(end_x_mil)
         track.end_y = self._mil_to_internal_units(end_y_mil)
+        # Altium stores every library track with start <= end (by x, then y).
+        if (track.end_x, track.end_y) < (track.start_x, track.start_y):
+            track.start_x, track.start_y, track.end_x, track.end_y = (
+                track.end_x, track.end_y, track.start_x, track.start_y
+            )
         track.width = self._mil_to_internal_units(width_mil)
         track.component_index = None
         track.net_index = None
-        track.polygon_index = 0
+        track.polygon_index = 0xFFFF
         track.subpoly_index = 0
         track.union_index = 0xFFFFFFFF
         track.is_locked = False
@@ -3697,7 +3724,7 @@ class PcbLibBuilder:
         arc.width = self._mil_to_internal_units(width_mil)
         arc.component_index = None
         arc.net_index = None
-        arc.polygon_index = 0
+        arc.polygon_index = 0xFFFF
         arc.subpoly_index = 0
         arc.union_index = 0xFFFFFFFF
         arc.is_locked = False

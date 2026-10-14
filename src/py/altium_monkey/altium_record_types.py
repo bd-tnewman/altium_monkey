@@ -2552,9 +2552,9 @@ class PcbGraphicalObject(PcbPrimitive):
     @classmethod
     def _to_internal_units(cls, mils: float) -> int:
         """
-        Convert mils to internal units (10,000/mil).
+        Convert mils to internal units (10,000/mil), rounded like Altium.
         """
-        return int(mils * 10000.0)
+        return int(round(mils * 10000.0))
 
     @property
     def x_mils(self) -> float:
