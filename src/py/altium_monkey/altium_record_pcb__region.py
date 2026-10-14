@@ -14,6 +14,7 @@ from .altium_pcb_enums import (
     pcb_region_kind_to_native_kind,
 )
 from .altium_pcb_layer_ref import PcbLayerRef, resolve_pcb_primitive_layer_state
+from .altium_record_properties_patch import patch_properties_text
 from .altium_record_pcb__svg_support import (
     svg_fill_color,
     svg_layer_ref,
@@ -104,6 +105,7 @@ class AltiumPcbRegion(PcbV7LayerTokenMixin, PcbGraphicalObject):
             None  # Snapshot of property fields at parse time
         )
         self._properties_emit_trailing_null: bool = False
+        self._properties_built_at_parse: str | None = None
         self._properties_include_keepout_restrictions: bool = True
         self._trailing_data: bytes = b""
         self._trailing_data_outline_signature: tuple | None = None
@@ -319,6 +321,9 @@ class AltiumPcbRegion(PcbV7LayerTokenMixin, PcbGraphicalObject):
         self._raw_binary = data[offset:cursor]
         self._raw_binary_signature = self._state_signature()
         self._properties_raw_signature = self._properties_field_signature()
+        self._properties_built_at_parse = (
+            self._properties_string() if self._properties_raw is not None else None
+        )
 
         return cursor - offset
 
@@ -513,12 +518,26 @@ class AltiumPcbRegion(PcbV7LayerTokenMixin, PcbGraphicalObject):
             and self._properties_raw_signature is not None
             and self._properties_field_signature() == self._properties_raw_signature
         )
+        patched = None
+        if (
+            not props_unchanged
+            and self._properties_raw is not None
+            and getattr(self, "_properties_built_at_parse", None)
+        ):
+            patched = patch_properties_text(
+                self._properties_raw,
+                self._properties_built_at_parse,
+                self._properties_string(),
+            )
         if props_unchanged:
             properties_raw = self._properties_raw
             if properties_raw is None:
                 raise RuntimeError("Missing raw region properties")
             subrecord.extend(struct.pack("<I", len(properties_raw)))
             subrecord.extend(properties_raw)
+        elif patched is not None:
+            subrecord.extend(struct.pack("<I", len(patched)))
+            subrecord.extend(patched)
         else:
             props_bytes = self._properties_string().encode("ascii", errors="replace")
             if self._properties_emit_trailing_null and not props_bytes.endswith(

@@ -10,6 +10,7 @@ from .altium_pcb_enums import PcbBodyProjection
 from .altium_pcb_enums import PcbRegionKind
 from .altium_pcb_enums import pcb_region_kind_to_native_kind
 from .altium_pcb_layer_ref import PcbLayerRef, resolve_pcb_primitive_layer_state
+from .altium_record_properties_patch import patch_properties_text
 from .altium_record_types import PcbGraphicalObject, PcbRecordType
 
 # Reuse vertex classes from shapebased_region
@@ -157,6 +158,7 @@ class AltiumPcbComponentBody(PcbGraphicalObject):
         # length-prefixed property payload. If it is emitted as an extra byte after
         # the payload, Altium reads the following outline count at the wrong offset.
         self._props_has_null_terminator: bool = False
+        self._properties_built_at_parse: str | None = None
         # Geometry format that was successfully parsed: (use_extended, include_closing_vertex)
         self._geometry_variant: tuple[bool, bool] | None = None
 
@@ -468,6 +470,7 @@ class AltiumPcbComponentBody(PcbGraphicalObject):
         self._raw_binary_signature = self._state_signature()
         # Snapshot property-field values at parse time for properties_raw validity check
         self._properties_raw_signature = self._properties_field_signature()
+        self._properties_built_at_parse = self._properties_string()
         return bytes_consumed
 
     def _parse_properties(self) -> None:
@@ -993,9 +996,22 @@ class AltiumPcbComponentBody(PcbGraphicalObject):
             and self._properties_raw_signature is not None
             and self._properties_field_signature() == self._properties_raw_signature
         )
+        patched = None
+        if not props_unchanged and raw_properties is not None and getattr(
+            self, "_properties_built_at_parse", None
+        ):
+            patched = patch_properties_text(
+                raw_properties,
+                self._properties_built_at_parse,
+                self._properties_string(),
+                encoding="utf-8",
+            )
         if props_unchanged and raw_properties is not None:
             subrecord.extend(struct.pack("<I", len(raw_properties)))
             subrecord.extend(raw_properties)
+        elif patched is not None:
+            subrecord.extend(struct.pack("<I", len(patched)))
+            subrecord.extend(patched)
         else:
             props_bytes = self._properties_string().encode("utf-8", errors="replace")
             if not self._props_has_null_terminator and not props_bytes.endswith(
