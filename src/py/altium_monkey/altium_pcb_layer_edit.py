@@ -190,9 +190,10 @@ SMART_UNION_COUNT_KEY = "SMARTUNIONSSTORAGE"
 def remove_smart_unions(footprint: object, unions: Iterable[PcbSmartUnion]) -> int:
     """
     Delete placed rectangles from a footprint opened with ``edit_footprint``: their side tracks and
-    their ``SMARTUNION_ITEMn`` entries. The remaining entries are renumbered from 0 and
-    ``SMARTUNIONSSTORAGE`` holds their count; with none left both keys go, as in an Altium save
-    (checked against Altium deleting the only rectangle of a footprint). Returns tracks removed.
+    their ``SMARTUNION_ITEMn`` entries. The remaining entries are renumbered from 0 (rewritten in the
+    form Altium uses when it re-saves them) and ``SMARTUNIONSSTORAGE`` holds their count; with none
+    left both keys go. Checked against Altium deleting the only rectangle of 8-UFDFN-EP (2x3) and the
+    first of two in 8-X2SON. Returns the number of tracks removed.
     """
     doomed = list(unions)
     for union in doomed:
@@ -219,10 +220,30 @@ def remove_smart_unions(footprint: object, unions: Iterable[PcbSmartUnion]) -> i
     if keep:
         rebuilt[SMART_UNION_COUNT_KEY] = str(len(keep))
         for i, value in enumerate(keep):
-            rebuilt[f"{SMART_UNION_PREFIX}{i}"] = value
+            rebuilt[f"{SMART_UNION_PREFIX}{i}"] = _current_union_text(value)
     params.clear()
     params.update(rebuilt)
     return removed
+
+
+def _current_union_text(value: str) -> str:
+    """
+    A SmartUnion entry in the form current Altium writes when it re-saves a footprint's unions
+    (checked against Altium renumbering 8-X2SON): leading ``<Pipe>``, the rotation's sign column kept as
+    a space, and X1/Y1 repeated after FUNIONINDEX. Entries already in that form are left as they are.
+    """
+    if value.startswith("<Pipe>"):
+        return value
+    fields = dict(_SMART_UNION_FIELD.findall(value))
+    text = "<Pipe>" + re.sub(r"(ROTATION<EQ>)(?=[0-9])", r"\1 ", value, count=1)
+    if "X1" in fields and "Y1" in fields:
+        text = re.sub(
+            r"(<Pipe>FUNIONINDEX<EQ>[^<]*)",
+            lambda m: f"{m.group(1)}<Pipe>X1<EQ>{fields['X1']}<Pipe>Y1<EQ>{fields['Y1']}",
+            text,
+            count=1,
+        )
+    return text
 
 
 def _union_bounds(fields: dict[str, str]) -> tuple[int, int, int, int] | None:
