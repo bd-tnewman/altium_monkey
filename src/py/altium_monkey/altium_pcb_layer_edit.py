@@ -184,6 +184,47 @@ def _layer_token(primitive: object, registry: PcbLayerRegistry | None) -> str:
     return primitive.layer_ref(registry=registry).token
 
 
+SMART_UNION_COUNT_KEY = "SMARTUNIONSSTORAGE"
+
+
+def remove_smart_unions(footprint: object, unions: Iterable[PcbSmartUnion]) -> int:
+    """
+    Delete placed rectangles from a footprint opened with ``edit_footprint``: their side tracks and
+    their ``SMARTUNION_ITEMn`` entries. The remaining entries are renumbered from 0 and
+    ``SMARTUNIONSSTORAGE`` holds their count; with none left both keys go, as in an Altium save
+    (checked against Altium deleting the only rectangle of a footprint). Returns tracks removed.
+    """
+    doomed = list(unions)
+    for union in doomed:
+        if not union.is_identified:
+            raise PcbLayerEditError(
+                f"The linked shape {union.key} on {union.layer_token} can't be identified; "
+                "it can't be deleted safely"
+            )
+    removed = 0
+    for union in doomed:
+        for track in union.members:
+            footprint.remove_primitive(track)
+            removed += 1
+    params = footprint.parameters
+    keep = [params[k] for k in sorted(
+        (k for k in params if k.upper().startswith(SMART_UNION_PREFIX)),
+        key=lambda k: int(k[len(SMART_UNION_PREFIX):] or 0),
+    ) if k not in {u.key for u in doomed}]
+    rebuilt = {}
+    for key, value in params.items():
+        if key.upper().startswith(SMART_UNION_PREFIX) or key.upper() == SMART_UNION_COUNT_KEY:
+            continue
+        rebuilt[key] = value
+    if keep:
+        rebuilt[SMART_UNION_COUNT_KEY] = str(len(keep))
+        for i, value in enumerate(keep):
+            rebuilt[f"{SMART_UNION_PREFIX}{i}"] = value
+    params.clear()
+    params.update(rebuilt)
+    return removed
+
+
 def _union_bounds(fields: dict[str, str]) -> tuple[int, int, int, int] | None:
     try:
         x1, y1, x2, y2 = (
