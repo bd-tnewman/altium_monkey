@@ -7,6 +7,7 @@ authoring needs a small typed helper layer rather than raw stream assembly.
 
 from __future__ import annotations
 
+import math
 import struct
 import uuid
 from dataclasses import dataclass
@@ -439,13 +440,17 @@ def build_authored_text(
                     and int(text_justification) in _JUSTIFICATION_ANCHOR
                     and not is_frame
                     and not is_mirrored
-                    and float(rotation_degrees) % 360.0 == 0.0
                 ):
-                    # position_mils is the justification anchor, as in Altium's Properties panel.
+                    # position_mils is the justification anchor, as in Altium's Properties panel; the box
+                    # turns with the text about X/Y (checked against Altium-saved texts at 0/90/180/270).
                     fx, fy = _JUSTIFICATION_ANCHOR[int(text_justification)]
+                    ox = box[0] + fx * (box[2] - box[0])
+                    oy = box[1] + fy * (box[3] - box[1])
+                    angle = math.radians(float(rotation_degrees))
+                    c, s = math.cos(angle), math.sin(angle)
                     anchor_x, anchor_y = text_record.x, text_record.y
-                    text_record.x = round(anchor_x - box[0] - fx * (box[2] - box[0]))
-                    text_record.y = round(anchor_y - box[1] - fy * (box[3] - box[1]))
+                    text_record.x = round(anchor_x - (ox * c - oy * s))
+                    text_record.y = round(anchor_y - (ox * s + oy * c))
                     text_record.snap_point_x = anchor_x
                     text_record.snap_point_y = anchor_y
     return text_record

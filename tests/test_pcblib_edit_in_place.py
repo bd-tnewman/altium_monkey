@@ -119,3 +119,17 @@ def test_new_primitives_follow_altium_conventions(source: Path, tmp_path: Path) 
     assert (text.x, text.y) == (pytest.approx(-983931, abs=20), pytest.approx(-65595, abs=20))
     assert (text.snap_point_x, text.snap_point_y) == (0, 0)
     assert text.is_justification_valid and not text.is_designator
+
+
+def test_rotated_justified_text_turns_about_the_anchor(source: Path, tmp_path: Path) -> None:
+    library = AltiumPcbLib(source)
+    fp = library.edit_footprint("FP_A")
+    fp.add_text(text=".Designator", position_mils=(100, 50), height_mils=19.685, rotation_degrees=90,
+                stroke_width_mils=2.953, layer="MECHANICAL1", text_justification=5)
+    out = tmp_path / "rotated.PcbLib"
+    library.save(out)
+    text = next(t for t in AltiumPcbLib(out).find_footprint("FP_A").texts if t.text_content == ".Designator")
+    # The unrotated offset from X/Y to the centre (above), turned 90 degrees.
+    assert (text.x - 1000000, text.y - 500000) == (pytest.approx(65595, abs=20), pytest.approx(-983931, abs=20))
+    assert (text.snap_point_x, text.snap_point_y) == (1000000, 500000)
+    assert text.rotation == 90
