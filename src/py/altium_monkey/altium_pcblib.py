@@ -5,6 +5,7 @@ Parse and round-trip Altium PcbLib footprint libraries.
 import copy
 import json
 import logging
+import re
 import struct
 import uuid
 import zlib
@@ -451,6 +452,9 @@ class AltiumPcbFootprint:
         ] = []
         self.raw_uniqueid_info: bytes | None = None
         self.raw_uniqueid_info_header: bytes | None = None
+        self.raw_custom_shapes: bytes | None = None
+        # The pad each CustomShapes entry belongs to, in stream order (None if unresolved when read).
+        self._custom_shape_targets: list[object | None] | None = None
         self.raw_corner_radius_chamfer: bytes | None = None
         self.corner_radius_chamfer: list[AltiumPcbCornerRadiusChamfer] = []
         self.raw_via_structure_manager: bytes | None = None
@@ -632,6 +636,41 @@ class AltiumPcbFootprint:
             wanted = str(position + 1)
             if str(region.properties.get("PADINDEX", "")).strip() != wanted:
                 region.properties["PADINDEX"] = wanted
+
+    def _custom_shapes_for_save(self) -> bytes | None:
+        """
+        The CustomShapes stream with each entry's PRIMITIVEINDEX pointing back
+        at its pad.
+
+        Like PADINDEX, PRIMITIVEINDEX is the pad's position among all records
+        (0-based here), so adding or removing a record ahead of the pad moves
+        it. Entries whose index didn't change keep their source bytes.
+        """
+        raw = self.raw_custom_shapes
+        targets = self._custom_shape_targets
+        if raw is None or targets is None:
+            return raw
+        entries = _split_custom_shape_entries(raw)
+        if entries is None or len(entries) != len(targets):
+            return raw
+        index_by_id = {id(p): i for i, p in enumerate(self._record_order)}
+        out = [raw[:4]]
+        changed = False
+        for body, target in zip(entries, targets):
+            if target is not None:
+                position = index_by_id.get(id(target))
+                if position is None:
+                    raise ValueError(
+                        f"Footprint {self.name!r}: a pad with custom shape data "
+                        "(CustomShapes) was removed but its shape data was not"
+                    )
+                rewritten = _CUSTOM_SHAPE_INDEX_RE.sub(
+                    f"|PRIMITIVEINDEX={position}".encode("ascii"), body, count=1
+                )
+                changed |= rewritten != body
+                body = rewritten
+            out.append(struct.pack("<I", len(body)) + body)
+        return b"".join(out) if changed else raw
 
     def add_pad(
         self,
@@ -1942,6 +1981,47 @@ class AltiumPcbFootprint:
             f"{len(self.vias)} vias, {len(self.regions)} regions, "
             f"{len(self.component_bodies)} bodies)"
         )
+
+
+# ============================================================================
+# CustomShapes (per-footprint) for PcbLib
+# ============================================================================
+
+_CUSTOM_SHAPE_INDEX_RE = re.compile(rb"\|PRIMITIVEINDEX=(-?\d+)")
+
+
+def _split_custom_shape_entries(data: bytes) -> list[bytes] | None:
+    """[uint32 count] then [uint32 length][|KEY=VALUE...] per entry; None if malformed."""
+    if len(data) < 4:
+        return None
+    count = struct.unpack_from("<I", data)[0]
+    entries, offset = [], 4
+    while offset + 4 <= len(data):
+        length = struct.unpack_from("<I", data, offset)[0]
+        if offset + 4 + length > len(data):
+            return None
+        entries.append(data[offset + 4 : offset + 4 + length])
+        offset += 4 + length
+    if offset != len(data) or len(entries) != count:
+        return None
+    return entries
+
+
+def _attach_custom_shape_targets(footprint: "AltiumPcbFootprint") -> None:
+    entries = _split_custom_shape_entries(footprint.raw_custom_shapes or b"")
+    if entries is None:
+        return
+    targets: list[object | None] = []
+    for body in entries:
+        match = _CUSTOM_SHAPE_INDEX_RE.search(body)
+        index = int(match.group(1)) if match else -1
+        record = (
+            footprint._record_order[index]
+            if 0 <= index < len(footprint._record_order)
+            else None
+        )
+        targets.append(record if isinstance(record, AltiumPcbPad) else None)
+    footprint._custom_shape_targets = targets
 
 
 # ============================================================================
@@ -3542,7 +3622,15 @@ class AltiumPcbLib:
     ) -> tuple[str, list[str], bool]:
         """
         Resolve the OLE storage name for a footprint.
+
+        SectionKeys wins when it lists the name: when a long name truncates to
+        another footprint's name, Altium gives one of the two a different
+        storage and records the choice there (and can swap them between saves).
         """
+        keyed = section_key_map.get(footprint_name)
+        if keyed is not None and [keyed, "Data"] in ole.listdir():
+            return keyed, [keyed, "Data"], True
+
         ole_name = footprint_name
         data_entry = [ole_name, "Data"]
         stream_exists = data_entry in ole.listdir()
@@ -3665,6 +3753,10 @@ class AltiumPcbLib:
             "raw_uniqueid_info_header",
             [ole_name, "UniqueIDPrimitiveInformation", "Header"],
         )
+        if cls._load_optional_stream(
+            ole, footprint, "raw_custom_shapes", [ole_name, "CustomShapes"]
+        ) is not None:
+            _attach_custom_shape_targets(footprint)
         raw_via_structure_manager = cls._load_optional_stream(
             ole,
             footprint,
@@ -4124,6 +4216,7 @@ class AltiumPcbLib:
                         "uniqueidprimitiveinformation/header",
                         "uniqueidprimitiveinformation/data",
                         "cornerradiuschamfer",
+                        "customshapes",
                         "viastructuremanager",
                         "viastructures",
                     )
@@ -4169,6 +4262,7 @@ class AltiumPcbLib:
                 "uniqueidprimitiveinformation/header",
                 "uniqueidprimitiveinformation/data",
                 "cornerradiuschamfer",
+                "customshapes",
                 "viastructuremanager",
                 "viastructures",
             }
@@ -4334,6 +4428,9 @@ class AltiumPcbLib:
         )
         self._add_optional_stream(
             writer, f"{storage_name}/WideStrings", footprint.raw_widestrings
+        )
+        self._add_optional_stream(
+            writer, f"{storage_name}/CustomShapes", footprint._custom_shapes_for_save()
         )
 
         self._write_counted_footprint_stream(
