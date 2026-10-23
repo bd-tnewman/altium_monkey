@@ -609,6 +609,30 @@ class AltiumPcbFootprint:
             kept.append(item)
         self.extended_primitive_information = kept
 
+    def _reindex_region_pad_links(self) -> None:
+        """
+        Point each custom-pad region's PADINDEX back at its pad.
+
+        In a PcbLib, PADINDEX is the 1-based position of the pad among all of
+        the footprint's records (arcs, pads, tracks, ... in Data stream order),
+        so adding or removing a record ahead of the pad moves it. Altium drops
+        the custom shape of a pad whose region points at anything else.
+        """
+        index_by_id = {id(p): i for i, p in enumerate(self._record_order)}
+        for region in self.regions:
+            target = getattr(region, "_padindex_target", None)
+            if target is None:
+                continue
+            position = index_by_id.get(id(target))
+            if position is None:
+                raise ValueError(
+                    f"Footprint {self.name!r}: the pad of a custom pad shape was "
+                    "removed but its shape region was not"
+                )
+            wanted = str(position + 1)
+            if str(region.properties.get("PADINDEX", "")).strip() != wanted:
+                region.properties["PADINDEX"] = wanted
+
     def add_pad(
         self,
         *,
@@ -1850,6 +1874,7 @@ class AltiumPcbFootprint:
         Returns:
             Native binary bytes for the footprint `Data` stream.
         """
+        self._reindex_region_pad_links()
         # Build footprint name header: [uint32 pascal_len] [byte name_len] [name_bytes]
         if (
             self._raw_name_header is not None

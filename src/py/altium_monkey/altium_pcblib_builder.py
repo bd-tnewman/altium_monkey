@@ -3625,6 +3625,8 @@ class PcbLibBuilder:
             shape_region=shape_region,
             pad_index=region_pad_index,
         )
+        if pad_index is None:
+            region._padindex_target = pad      # PADINDEX follows the pad's record position on save
         primitive_index = footprint._record_order.index(region)
         footprint.extended_primitive_information.append(
             build_pcblib_custom_pad_extended_info(

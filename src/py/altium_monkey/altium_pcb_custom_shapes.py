@@ -578,6 +578,35 @@ def _is_pcblib_custom_pad_anchor(pad: object) -> bool:
     return 0 < width <= 10000 and 0 < height <= 10000
 
 
+def _attach_pcblib_padindex_regions(footprint: object) -> None:
+    """
+    PcbLib PADINDEX is a 1-based position among all of the footprint's records
+    (verified on 620 Altium-saved custom pads), not among its pads. Each linked
+    region remembers its pad so the index can follow it when records are added
+    or removed; a PADINDEX that doesn't land on a pad is a broken link and is
+    left as it is.
+    """
+    records = list(getattr(footprint, "_record_order", []) or [])
+    pads = list(getattr(footprint, "pads", []) or [])
+    pad_position = {id(p): i for i, p in enumerate(pads)}
+    for region in list(getattr(footprint, "regions", []) or []):
+        index = _region_pad_index_zero_based(region)
+        if index is None:
+            continue
+        target = records[index] if 0 <= index < len(records) else None
+        if target is None or id(target) not in pad_position:
+            continue
+        region._padindex_target = target
+        attach_custom_pad_shape(
+            target,
+            source="pcblib_padindex",
+            region=region,
+            pad_index=pad_position[id(target)],
+            layer=_coerce_layer_id(getattr(region, "layer", None)),
+            require_supported_layer=False,
+        )
+
+
 def resolve_pcblib_custom_pad_shapes(footprint: object) -> None:
     """
     Infer semantic custom-pad objects for a parsed `PcbLib` footprint.
@@ -587,12 +616,7 @@ def resolve_pcblib_custom_pad_shapes(footprint: object) -> None:
     for pad in pads:
         setattr(pad, "custom_shape", None)
 
-    _attach_explicit_padindex_regions(
-        pads=pads,
-        regions=regions,
-        shape_regions=None,
-        source="pcblib_inferred",
-    )
+    _attach_pcblib_padindex_regions(footprint)
     _attach_derived_layer_regions(
         pads=pads,
         regions=regions,
