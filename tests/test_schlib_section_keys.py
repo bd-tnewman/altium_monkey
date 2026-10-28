@@ -37,3 +37,17 @@ def test_get_symbol_by_libreference() -> None:
     assert library.get_symbol("CON_ZIF") is symbol
     assert library.get_symbol("CON/ZIF") is symbol
     assert library.get_symbol("missing") is None
+
+
+def test_symbol_svg_reports_where_the_origin_lands() -> None:
+    import re
+
+    library = AltiumSchLib()
+    symbol = library.add_symbol("R")
+    symbol.add_line(0, 0, 300, -100)            # mils; the render is in 10-mil units
+    origin: dict = {}
+    svg = library.symbol_to_svg("R", origin_out=origin)
+    assert set(origin) == {"width", "height", "x", "y"}
+    ends = [tuple(float(v) for v in m) for m in re.findall(r'<line x1="([-\d.]+)" y1="([-\d.]+)" x2="([-\d.]+)" y2="([-\d.]+)"', svg)]
+    assert (origin["x"], origin["y"], origin["x"] + 30, origin["y"] + 10) in ends
+    assert library.symbol_to_svg("R") == svg

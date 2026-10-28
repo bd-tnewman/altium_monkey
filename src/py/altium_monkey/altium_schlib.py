@@ -7502,11 +7502,14 @@ class AltiumSchLib(JsonApplyMixin):
         profile: str = "onscreen",
         render_options: SchSvgRenderOptions | None = None,
         pin_text_follows_orientation: bool = False,
+        origin_out: dict | None = None,
     ) -> SchGeometryDocument:
         """
         Build a symbol-scoped IR document for a standalone SchLib symbol render.
 
         The symbol renderer now follows the same IR -> SVG pipeline as SchDoc.
+        origin_out, if given, receives the viewport size and where the symbol origin lands in it
+        (keys width, height, x, y; one viewport unit = one symbol coordinate unit, y down).
         """
         from ._sch_source_admission import _SourceAdmission
         from .altium_sch_geometry_oracle import (
@@ -7590,6 +7593,9 @@ class AltiumSchLib(JsonApplyMixin):
             root_text_sources=root_text_sources,
             geometry_ctx=bounds_ctx,
         )
+        if origin_out is not None:
+            origin_out.update(width=render_width, height=render_height, x=offset_x,
+                              y=render_height + offset_y)
 
         ctx = SchSvgRenderContext(
             scale=1.0,
@@ -7838,6 +7844,7 @@ class AltiumSchLib(JsonApplyMixin):
         *,
         options: SchSvgRenderOptions | None = None,
         pin_text_follows_orientation: bool = False,
+        origin_out: dict | None = None,
     ) -> str:
         """
         Render a single symbol from this library as a standalone SVG.
@@ -7916,6 +7923,7 @@ class AltiumSchLib(JsonApplyMixin):
                 profile=ir_profile,
                 render_options=render_options,
                 pin_text_follows_orientation=pin_text_follows_orientation,
+                origin_out=origin_out,
             )
             svg = SchGeometrySvgRenderer(
                 SchGeometrySvgRenderOptions(
