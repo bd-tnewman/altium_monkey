@@ -617,12 +617,15 @@ def _section_key_entries(
                 "SectionKeys has an empty or duplicate LibRef",
                 stream="SectionKeys",
             )
-        if not section_key or "/" in section_key or "\\" in section_key:
+        if not section_key:
             raise SchLibContainerError(
                 "malformed",
-                "SectionKeys target is not a top-level storage key",
+                "SectionKeys target is empty",
                 stream="SectionKeys",
             )
+        # Altium writes the key with the LibRef's own characters ("CON/ZIF, 22pin, CSI2, Molex, 50") and names the
+        # storage with them replaced ("CON_ZIF, 22pin, CSI2, Molex, 50"), as it does for implicit storage names.
+        section_key = sanitize_stream_name(section_key)
         folded = section_key.casefold()
         if folded in folded_keys:
             raise SchLibContainerError(

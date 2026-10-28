@@ -6288,10 +6288,13 @@ class AltiumSchLib(JsonApplyMixin):
 
     def get_symbol(self, name: str) -> AltiumSymbol | None:
         """
-        Get a symbol by name.
+        Get a symbol by name, or by its LibReference when that differs from the storage name.
         """
         for symbol in self.symbols:
             if symbol.name == name:
+                return symbol
+        for symbol in self.symbols:
+            if symbol.original_name == name:
                 return symbol
         return None
 
